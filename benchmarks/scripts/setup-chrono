@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SOURCE=$(cd "$ROOT/.." && pwd)
+BUILD=${BUILD_DIR:-$SOURCE/build-render-bench}
+PYTHON=${PYTHON:-$ROOT/envs/chrono/.venv/bin/python}
+JOBS=${JOBS:-4}
+
+if [[ ! -x $PYTHON ]]; then
+    echo "no python at $PYTHON, run: scripts/make-env chrono" >&2
+    exit 1
+fi
+
+cmake -S "$SOURCE" -B "$BUILD" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCHRONO_BATCH_RENDER_BUILD_PYTHON=ON \
+    -DCHRONO_BATCH_RENDER_BUILD_VIEWER=ON \
+    -DCHRONO_BATCH_RENDER_BUILD_XR=ON \
+    -DCHRONO_BATCH_RENDER_BUILD_TESTS=OFF \
+    -DCHRONO_BATCH_RENDER_INSTALL=OFF \
+    -DPython_EXECUTABLE="$PYTHON"
+cmake --build "$BUILD" -j "$JOBS" --target _core
+"$PYTHON" -c "import chrono_batch_render as c; print('chrono_batch_render from', c.__file__)"

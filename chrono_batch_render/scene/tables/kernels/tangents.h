@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#pragma once
+
+#include "chrono_batch_render/scene/records/prims.h"
+#include "chrono_batch_render/scene/records/transforms.h"
+
+namespace chrono::batch_render {
+
+struct TangentParams {
+    Ptr<Float3> points;
+    Ptr<Float3> smoothNormals;
+    Ptr<Float3> cornerNormals;
+    Ptr<Float2> cornerSt;
+    Ptr<int> indices;
+    Ptr<uint> triangles;
+    Ptr<uint> groupStarts;
+    Ptr<uint> groupCorners;
+    Ptr<uint> cornerGroups;
+    Ptr<Float4> groupTangents;
+    Ptr<Float4> tangents;
+    uint groupCount;
+    uint cornerCount;
+    uint faceted;
+    uint padding;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(TangentParams, 104);
+
+static const uint kTangentsGroup = 64;
+
+}

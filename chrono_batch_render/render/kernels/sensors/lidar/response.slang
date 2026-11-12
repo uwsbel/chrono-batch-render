@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.render.outputs;
+__exported import chrono_batch_render.render.kernels.sensors.lidar.pattern;
+__exported import chrono_batch_render.render.kernels.sensors.iresponse;
+import chrono_batch_render.render.kernels.sensors.points;
+import chrono_batch_render.render.kernels.random;
+import chrono_batch_render.render.kernels.surface.compute;
+import chrono_batch_render.render.kernels.material.dispatch;
+
+using namespace chrono::batch_render;
+
+struct LidarReturn {
+    float3 position;
+    float distance;
+    float intensity;
+    float3 normal;
+    uint prim;
+    int64_t instance;
+}
+
+struct LidarResponse : IResponse<LidarPattern> {
+    HitQuery query;
+    RenderTables* tables;
+    ReturnMode mode;
+    float wavelength;
+    uint stride;
+    uint returns;
+    uint found;
+    LidarReturn kept[kMostLidarReturns];
+    uint samples;
+    uint hits;
+    float3 positionSum;
+    float distanceSum;
+    float intensitySum;
+    float3 normalSum;
+    uint firstPrim;
+    int64_t firstInstance;
+
+    static LidarResponse Load(SensorContext context, LidarPattern pattern) {
+        Capture* capture = context.capture;
+        LidarResponse response;
+        response.query = context.query;
+        response.tables = context.params.tables;
+        const LidarRecord record =
+            response.tables->lidars[PrimRow(response.tables, capture->plan.sensor, kSlotLidar)];
+        response.mode = ReturnMode(record.returnMode);
+        response.wavelength = record.wavelength;
+        response.stride = max(capture->plan.returns, 1u);
+        response.returns = min(response.stride, kMostLidarReturns);
+        response.found = 0;
+        for (uint i = 0; i < kMostLidarReturns; ++i) {
+            response.kept[i] = { float3(0), 0, 0, float3(0), kNoPrim, -1 };
+        }
+        response.samples = 0;
+        response.hits = 0;
+        response.positionSum = float3(0);
+        response.distanceSum = 0;
+        response.intensitySum = 0;
+        response.normalSum = float3(0);
+        response.firstPrim = kNoPrim;
+        response.firstInstance = -1;
+        return response;
+    }
+
+    float Intensity(SurfacePoint point, float3 direction) {
+        MaterialQuery materials = MaterialQuery(query, 0, 1);
+        materials.minimal = true;
+        ShadeContext context =
+            ShadeContext(materials, point.material, point, -direction);
+        UseWavelength(wavelength);
+        OpticalClosure<MonoSpectrum> closure = OpticalClosure<MonoSpectrum>();
+        ShadeDefinition<MonoSpectrum>(context, closure);
+        const float facing = abs(dot(point.geometricNormal, direction));
+        return max(closure.albedo.value, 0.0f) * lerp(facing, 1.0f, closure.retroreflection);
+    }
+
+    bool Before(LidarReturn a, LidarReturn b) {
+        switch (mode) {
+        case ReturnMode::First:
+            return a.distance < b.distance;
+        case ReturnMode::Last:
+            return a.distance > b.distance;
+        default:
+            return a.intensity > b.intensity;
+        }
+    }
+
+    [mutating]
+    void Keep(LidarReturn candidate) {
+        for (uint i = 0; i < kMostLidarReturns; ++i) {
+            if (i >= returns) {
+                return;
+            }
+            if (i >= found) {
+                kept[i] = candidate;
+                ++found;
+                return;
+            }
+            if (Before(candidate, kept[i])) {
+                const LidarReturn displaced = kept[i];
+                kept[i] = candidate;
+                candidate = displaced;
+            }
+        }
+    }
+
+    [mutating]
+    void Add(SensorRay ray, inout Rng rng) {
+        ++samples;
+        const PrimHit hit = query.Intersect(ray.ray);
+        if (!hit.IsHit()) {
+            return;
+        }
+        const SurfacePoint point = ComputeSurfacePoint(query, ray.ray, hit, ray.spread);
+        LidarReturn candidate;
+        candidate.position = point.position;
+        candidate.distance = point.distance;
+        candidate.intensity = Intensity(point, ray.ray.direction);
+        candidate.normal = point.shadingNormal;
+        candidate.prim = point.part;
+        candidate.instance = HitInstanceId(tables, point.slot, point.element.face);
+        if (mode == ReturnMode::Mean) {
+            ++hits;
+            positionSum += candidate.position;
+            distanceSum += candidate.distance;
+            intensitySum += candidate.intensity;
+            normalSum += candidate.normal;
+            if (firstPrim == kNoPrim) {
+                firstPrim = candidate.prim;
+                firstInstance = candidate.instance;
+            }
+            return;
+        }
+        Keep(candidate);
+    }
+
+    void Write(SensorContext context, LidarPattern pattern, CapturePixel pixel) {
+        RenderParams params = context.params;
+        LidarReturn results[kMostLidarReturns] = kept;
+        uint count = found;
+        if (mode == ReturnMode::Mean) {
+            count = hits > 0 ? 1 : 0;
+            const float spread = float(max(hits, 1u));
+            results[0] = { positionSum / spread, distanceSum / spread,
+                           intensitySum / float(max(samples, 1u)), normalize(normalSum), firstPrim,
+                           firstInstance };
+        }
+        for (uint i = 0; i < stride; ++i) {
+            CapturePixel at = pixel;
+            at.index = pixel.index * stride + i;
+            const bool returned = i < count && i < kMostLidarReturns;
+            const LidarReturn point = results[min(i, kMostLidarReturns - 1)];
+            WritePoint(at, returned, pattern.frame, point.position, point.distance, point.intensity, 0,
+                       point.prim, point.instance);
+            if (returned) {
+                const LidarReturn result = results[i];
+                Write(at, RenderVarSource::DistanceToCamera, result.distance);
+                Write(at, RenderVarSource::Intensity, result.intensity);
+                WriteNormal(at, result.normal);
+                WriteSegmentation(params, at, result.prim);
+            } else {
+                Write(at, RenderVarSource::DistanceToCamera, pixel.capture->plan.missDistance);
+                Write(at, RenderVarSource::Intensity, 0.0f);
+                WriteNormal(at, float3(0));
+                WriteSegmentation(params, at, kNoPrim);
+            }
+        }
+    }
+}

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: BSD-3-Clause
+from __future__ import annotations
+
+from render_bench.config import SceneConfig
+from render_bench.datasets import hide_and_seek
+from render_bench.scene import Scene
+
+DATASETS = {
+    "hide_and_seek": hide_and_seek.build,
+}
+
+
+def build_scene(spec: SceneConfig, worlds: int, cameras_per_world: int) -> Scene:
+    if spec.dataset not in DATASETS:
+        raise ValueError(f"unknown dataset {spec.dataset!r}, expected one of {sorted(DATASETS)}")
+    return DATASETS[spec.dataset](spec, worlds, cameras_per_world)

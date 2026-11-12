@@ -1,0 +1,276 @@
+# SPDX-License-Identifier: BSD-3-Clause
+import math
+
+import numpy as np
+import pytest
+
+import chrono_batch_render
+
+
+def test_defined_prims_read_back_every_kind_of_value(scene):
+    half = math.sqrt(0.5)
+    ball = chrono_batch_render.Sphere.define(
+        scene,
+        "/Ball",
+        radius=2.5,
+        translate=(1, 2, 3),
+        orient=(0, 0, half, half),
+        display_color=(0.1, 0.2, 0.3),
+        visibility="invisible",
+        semantics_labels={"class": ["ball", "toy"]},
+    )
+    assert ball.path == "/Ball"
+    assert ball.name == "Ball"
+    assert ball.radius == 2.5
+    assert ball.translate == (1, 2, 3)
+    np.testing.assert_allclose(ball.orient, (0, 0, half, half))
+    np.testing.assert_allclose(ball.display_color, (0.1, 0.2, 0.3), rtol=1e-6)
+    assert ball.visibility == "invisible"
+
+    ball.radius = 4
+    ball.visibility = "inherited"
+    assert ball.radius == 4
+    assert ball.visibility == "inherited"
+
+    product = chrono_batch_render.RenderProduct.define(
+        scene, "/Product", resolution=(64, 48), render_mode="RealTime", camera=["/Cam"]
+    )
+    assert product.resolution == (64, 48)
+    assert product.render_mode == "RealTime"
+
+
+def test_bad_values_raise(scene):
+    ball = chrono_batch_render.Sphere.define(scene, "/Ball")
+    with pytest.raises((TypeError, ValueError)):
+        ball.radius = "wide"
+    with pytest.raises(RuntimeError, match="translate"):
+        ball.translate = (1, 2)
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        ball.visibility = "sometimes"
+    with pytest.raises(AttributeError):
+        ball.no_such_field = 1
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        chrono_batch_render.Sphere.define(scene, "/Other", radius="huge")
+
+
+def test_selections_read_and_write_arrays(scene):
+    for i in range(3):
+        chrono_batch_render.Sphere.define(scene, f"/Ball{i}", radius=i + 1)
+    chrono_batch_render.Cube.define(scene, "/Box")
+    balls = chrono_batch_render.Sphere.select(scene, "/Ball*")
+    assert len(balls) == 3
+    assert balls.paths == ["/Ball0", "/Ball1", "/Ball2"]
+    np.testing.assert_array_equal(balls.radius, [1, 2, 3])
+
+    balls.radius = 9
+    np.testing.assert_array_equal(balls.radius, [9, 9, 9])
+    balls.translate = np.arange(9, dtype=np.float64).reshape(3, 3)
+    np.testing.assert_array_equal(balls.translate[2], [6, 7, 8])
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        balls.radius = [1, 2]
+
+
+def test_structure_edits_keep_paths_consistent(scene):
+    chrono_batch_render.Xform.define(scene, "/Group")
+    chrono_batch_render.Sphere.define(scene, "/Group/Ball", radius=3)
+    chrono_batch_render.Xform.define(scene, "/Other")
+    assert scene.find("/Group/Ball") is not None
+    assert scene.find("/Nothing") is None
+
+    scene.rename(scene.find("/Group"), "Renamed")
+    assert scene.find("/Renamed/Ball") is not None
+    scene.move(scene.find("/Renamed"), "/Other/Renamed")
+    assert scene.find("/Other/Renamed/Ball") is not None
+
+    copied = scene.copy(scene.find("/Other/Renamed"))
+    scene.paste(copied, "/Pasted")
+    assert chrono_batch_render.Sphere.select(scene, "/Pasted/Ball").radius[0] == 3
+
+    count = scene.prim_count
+    scene.remove(scene.find("/Pasted"))
+    assert scene.prim_count == count - 2
+    with pytest.raises(RuntimeError):
+        chrono_batch_render.Sphere.define(scene, "relative")
+
+
+def test_worlds_are_counted_and_selected(scene):
+    for world in range(3):
+        chrono_batch_render.World.define(scene, f"/env_{world}")
+        chrono_batch_render.Sphere.define(scene, f"/env_{world}/Ball")
+    assert scene.world_count == 3
+    balls = chrono_batch_render.Sphere.select(scene, "/env_*/Ball")
+    assert len(balls.world(1)) == 1
+    assert balls.world(1).paths == ["/env_1/Ball"]
+
+
+def test_world_poses_compose_the_hierarchy(scene):
+    chrono_batch_render.Xform.define(scene, "/Group", translate=(1e7, 0, 0), scale=(2, 2, 2))
+    chrono_batch_render.Sphere.define(scene, "/Group/Ball", translate=(0.25, 2, 0))
+    balls = scene.select(["/Group/Ball"])
+    poses = balls.read_world_poses(chrono_batch_render.DType.FLOAT64).numpy()
+    assert poses.shape == (1, 7)
+    assert poses[0, :3].tolist() == [1e7 + 0.5, 4, 0]
+    assert poses[0, 3:].tolist() == [0, 0, 0, 1]
+    scales = balls.read_world_scales().numpy()
+    assert scales.tolist() == [[2, 2, 2]]
+
+
+def test_world_poses_write_through_the_parents(scene):
+    chrono_batch_render.Xform.define(scene, "/Group", translate=(10, 0, 0), scale=(2, 2, 2))
+    chrono_batch_render.Sphere.define(scene, "/Group/Ball")
+    balls = scene.select(["/Group/Ball"])
+    balls.write_world_poses(np.array([[12, 4, 0, 0, 0, 0, 1]], dtype=np.float64))
+    assert scene.find("/Group/Ball")["translate"] == pytest.approx((1, 2, 0))
+    poses = balls.read_world_poses(chrono_batch_render.DType.FLOAT64).numpy()
+    assert poses[0, :3] == pytest.approx([12, 4, 0])
+
+
+def test_prim_bounds_cover_each_prim(scene):
+    chrono_batch_render.Sphere.define(scene, "/Ball", translate=(1, 2, 3), radius=2)
+    scene.publish(wait=True)
+    bounds = scene.prim_bounds(["/Ball", "/Missing"])
+    assert bounds.shape == (2, 2, 3)
+    assert bounds[0].tolist() == [[-1, 0, 1], [3, 4, 5]]
+    assert not bounds[1].any()
+
+
+def test_shaders_connect_reconnect_and_disconnect(scene):
+    look = chrono_batch_render.NodeGraph.define(scene, "/Look")
+    albedo = chrono_batch_render.UsdUVTexture.define(scene, "/Look/Albedo", file="albedo.png")
+    uv = chrono_batch_render.UsdPrimvarReader_float2.define(scene, "/Look/Uv")
+    moved = chrono_batch_render.UsdTransform2d.define(scene, "/Look/Moved", in_=(1, 2))
+    assert moved.in_ == (1, 2)
+
+    albedo.connect("st", uv, "result")
+    look.connect("surface", albedo.prim, "rgb")
+    assert albedo.connections == [("st", "/Look/Uv", "result")]
+    assert look.connections == [("surface", "/Look/Albedo", "rgb")]
+
+    albedo.connect("st", moved, "result")
+    assert albedo.connections == [("st", "/Look/Moved", "result")]
+
+    albedo.disconnect("st")
+    assert albedo.connections == []
+    with pytest.raises(RuntimeError):
+        chrono_batch_render.Sphere.define(scene, "/Ball").connect("st", albedo, "rgb")
+
+
+def test_shaders_are_defined_by_their_info_id(scene):
+    surface = scene.define("/Surface", "Shader", {"id": "UsdPreviewSurface", "roughness": 0.25})
+    assert surface["id"] == "UsdPreviewSurface"
+    assert surface["roughness"] == 0.25
+    assert chrono_batch_render.UsdPreviewSurface.select(scene, "/Surface").roughness == [0.25]
+    with pytest.raises(ValueError):
+        scene.define("/Unnamed", "Shader")
+    with pytest.raises(ValueError):
+        scene.define("/Missing", "Shader", {"id": "NoSuchNode"})
+
+    surface["id"] = "UsdUVTexture"
+    assert chrono_batch_render.UsdUVTexture.select(scene, "/Surface").wrap_s == ["repeat"]
+    with pytest.raises(RuntimeError):
+        surface["id"] = "NoSuchNode"
+    assert surface["id"] == "UsdUVTexture"
+
+
+def test_material_nodes_load_from_slang_files(scene, tmp_path):
+    source = tmp_path / "glow.slang"
+    source.write_text(
+        "import chrono_batch_render.material;\n"
+        "struct PyGlow {\n"
+        "    [Color] float3 tint = float3(1, 0.5, 0);\n"
+        "    float strength = 2;\n"
+        "    void Material(inout SurfaceInputs m, ShadeContext c) {\n"
+        "        m.emission = SpectralValue.Rgb(tint * strength);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert scene.load_shaders(str(source)) == ["PyGlow"]
+    glow = scene.define("/Glow", "Shader", {"id": "PyGlow", "strength": 4.0})
+    assert glow["strength"] == 4.0
+    assert glow["tint"] == (1, 0.5, 0)
+
+
+def test_material_nodes_load_from_their_source_asset(scene, tmp_path):
+    source = tmp_path / "asset.slang"
+    source.write_text(
+        "import chrono_batch_render.material;\n"
+        "struct PyAsset {\n"
+        "    float strength = 3;\n"
+        "    void Material(inout SurfaceInputs m, ShadeContext c) {}\n"
+        "}\n"
+    )
+    asset = scene.define(
+        "/Asset",
+        "Shader",
+        {
+            "implementationSource": "sourceAsset",
+            "slangSourceAsset": str(source),
+            "slangSourceAssetSubIdentifier": "PyAsset",
+        },
+    )
+    assert asset["id"] == "PyAsset"
+    assert asset["strength"] == 3.0
+
+
+def test_reloading_an_edited_shader_file_replaces_its_nodes(scene, tmp_path):
+    source = tmp_path / "hot.slang"
+    body = (
+        "import chrono_batch_render.material;\n"
+        "struct PyHot {{\n"
+        "    float strength = {};\n"
+        "    void Material(inout SurfaceInputs m, ShadeContext c) {{}}\n"
+        "}}\n"
+    )
+    source.write_text(body.format(1))
+    assert scene.load_shaders(str(source)) == ["PyHot"]
+    assert scene.reload_shaders() == []
+    source.write_text(body.format(2))
+    assert scene.reload_shaders() == ["PyHot"]
+    hot = scene.define("/Hot", "Shader", {"id": "PyHot"})
+    assert hot["strength"] == 2.0
+
+
+def quads(scene, count):
+    corners = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], np.float32)
+    for i in range(count):
+        chrono_batch_render.Mesh.define(
+            scene,
+            f"/Quad{i}",
+            points=corners,
+            face_vertex_indices=np.array([0, 1, 2, 1, 3, 2], np.int32),
+            face_vertex_counts=np.array([3, 3], np.int32),
+        )
+    return chrono_batch_render.Mesh.select(scene, "/Quad*"), corners
+
+
+def test_selection_arrays_split_a_leading_prim_axis(scene):
+    meshes, corners = quads(scene, 3)
+    meshes.points = np.stack([corners + i for i in range(3)])
+    for i, points in enumerate(meshes.points):
+        np.testing.assert_array_equal(points, corners + i)
+
+    meshes.points = corners * 2
+    for points in meshes.points:
+        np.testing.assert_array_equal(points, corners * 2)
+
+
+def test_selection_arrays_set_each_prim_its_own_rows(scene):
+    meshes, corners = quads(scene, 2)
+    meshes.set_each("points", [corners, np.vstack([corners, corners + 5])])
+    assert [len(points) for points in meshes.points] == [4, 8]
+    meshes.set_each("face_vertex_indices", [[0, 1, 2], [0, 1, 2, 1, 3, 2]])
+    assert [len(indices) for indices in meshes.face_vertex_indices] == [3, 6]
+    with pytest.raises(ValueError, match="2 prims"):
+        meshes.set_each("points", [corners])
+
+
+def test_selection_arrays_reject_mismatched_shapes(scene):
+    meshes, corners = quads(scene, 3)
+    with pytest.raises(ValueError, match="3 prims"):
+        meshes.points = np.stack([corners, corners])
+    with pytest.raises(ValueError, match="rows of 3"):
+        meshes.points = np.zeros((4, 2), np.float32)
+    with pytest.raises(ValueError, match="rows of 3"):
+        meshes.prims[0]["points"] = np.zeros((4, 2), np.float32)
+    for points in meshes.points:
+        np.testing.assert_array_equal(points, corners)

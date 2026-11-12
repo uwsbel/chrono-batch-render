@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#pragma once
+
+#include "chrono_batch_render/stage/schema/types.h"
+
+namespace chrono::batch_render {
+
+static const uint kNoSpectrum = 0xFFFFFFFF;
+
+struct SpectraRecord {
+    Ptr<Float3> rgb;
+    Ptr<float> bands;
+    Ptr<Uint2> ranges;
+    Ptr<Float2> samples;
+    Ptr<float> sigmoids;
+    Ptr<float> sigmoidScales;
+    uint count;
+    uint detectors;
+    uint sigmoidResolution;
+    uint padding0;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(SpectraRecord, 64);
+
+}

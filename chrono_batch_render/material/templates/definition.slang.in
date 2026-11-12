@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.material.standard;
+import chrono_batch_render.render.kernels.material.nodes.texture;
+{{imports}}
+using namespace chrono::batch_render;
+
+struct {{type}}Params {
+{{fields}}};
+{{definition}}

@@ -1,0 +1,224 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "chrono_batch_render/render/ray_cast/ray_cast.h"
+
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "chrono_batch_render/device/device.h"
+#include "chrono_batch_render/device/program.h"
+#include "chrono_batch_render/device/queue.h"
+#include "chrono_batch_render/render/kernels.h"
+#include "chrono_batch_render/render/kernels/query/ray_cast.h"
+#include "chrono_batch_render/scene/scene.h"
+#include "chrono_batch_render/scene/scene_impl.h"
+#include "chrono_batch_render/util/error.h"
+#include "chrono_batch_render/util/profiler.h"
+#include "chrono_batch_render/util/span.h"
+
+namespace chrono::batch_render {
+namespace {
+
+int64_t CountRays(device::Device& device, const device::Tensor& tensor, int64_t width,
+                  device::DType type, const char* what) {
+    const Span<const int64_t> shape = tensor.Shape();
+    const bool shaped = width == 1 ? shape.size() == 1 : shape.size() == 2 && shape[1] == width;
+    const bool typed = tensor.Type() == type ||
+                       (type == device::DType::UInt32 && tensor.Type() == device::DType::Int32);
+    if (!shaped || !typed) {
+        throw Error("Ray {} are a [N{}] {} tensor", what,
+                    width == 1 ? "" : ", " + std::to_string(width),
+                    type == device::DType::Float32 ? "float32" : "uint32");
+    }
+    if (&tensor.GetDevice() != &device) {
+        throw Error("Ray {} are on {}, not the scene's {}; Device::Copy or Device::Import moves "
+                    "them",
+                    what, tensor.GetDevice().Adapter().alias, device.Adapter().alias);
+    }
+    const Span<const int64_t> strides = tensor.Strides();
+    if (!strides.empty() && ((shape.back() > 1 && strides.back() != 1) ||
+                             (width > 1 && shape[0] > 1 && strides[0] != width))) {
+        throw UnsupportedError("Ray {} are cast from contiguous tensors only", what);
+    }
+    return shape[0];
+}
+
+uint64_t InputAddress(device::Device& device, const device::Tensor& tensor, int64_t width,
+                      device::DType type, int64_t count, const char* what) {
+    if (tensor.Empty()) {
+        return 0;
+    }
+    if (CountRays(device, tensor, width, type, what) != count) {
+        throw Error("Ray {} hold {} rows for {} rays", what, tensor.Shape()[0], count);
+    }
+    return tensor.Address();
+}
+
+void Collect(const Prim& prim, std::vector<uint32_t>& prims) {
+    prims.push_back(prim.Index());
+    for (const Prim& child : prim.Children()) {
+        Collect(child, prims);
+    }
+}
+
+std::vector<uint32_t> IgnoredPrims(const std::vector<Prim>& ignore) {
+    std::vector<uint32_t> prims;
+    for (const Prim& prim : ignore) {
+        Collect(prim, prims);
+    }
+    std::ranges::sort(prims);
+    prims.erase(std::unique(prims.begin(), prims.end()), prims.end());
+    return prims;
+}
+
+uint64_t Output(device::Device& device, device::Tensor& tensor, bool wanted, device::DType type,
+                std::vector<int64_t> shape) {
+    if (!wanted) {
+        tensor = device::Tensor();
+        return 0;
+    }
+    const bool fits = !tensor.Empty() && &tensor.GetDevice() == &device && tensor.Type() == type &&
+                      std::ranges::equal(tensor.Shape(), shape);
+    if (!fits) {
+        tensor = device.CreateTensor(type, std::move(shape), "ray hits");
+    }
+    return tensor.Address();
+}
+
+}
+
+struct RayCaster::State {
+    Ref<Scene> scene;
+    Ref<device::Program> program;
+    std::string options;
+
+    void Link() {
+        options = SceneImpl::Get(*scene).GetCurves().ShapeOptions();
+        program = scene->GetDevice().CreateProgram(
+            {.modules = {"chrono_batch_render.render.kernels.query.ray_cast"},
+             .library = &kRenderKernels,
+             .sources = {{kShapeOptionsFile, options}},
+             .entries = {"CastClosest", "CastAny"},
+             .label = "ray cast",
+             .traversal = SceneImpl::Get(*scene).GetBuilder().Format()});
+    }
+};
+
+RayCaster::RayCaster(Ref<Scene> scene) : m_state(std::make_unique<State>()) {
+    if (!scene) {
+        throw Error("A ray caster of no scene");
+    }
+    m_state->scene = std::move(scene);
+    m_state->Link();
+}
+
+RayCaster::~RayCaster() = default;
+RayCaster::RayCaster(RayCaster&&) noexcept = default;
+RayCaster& RayCaster::operator=(RayCaster&&) noexcept = default;
+
+device::Operation RayCaster::Cast(const Rays& rays, RayHits& hits, const RayCastDesc& desc,
+                                  Stream stream) {
+    CHRONO_BATCH_RENDER_ZONE("Query/RayCast");
+    Scene& scene = *m_state->scene;
+    SceneUpdate update = SceneImpl::Get(scene).Update({}, stream);
+    if (SceneImpl::Get(scene).GetCurves().ShapeOptions() != m_state->options) {
+        m_state->Link();
+    }
+    device::Device& device = scene.GetDevice();
+    if (rays.origins.Empty() || rays.directions.Empty()) {
+        throw Error("A cast needs ray origins and directions");
+    }
+    constexpr device::DType kFloat = device::DType::Float32;
+    const int64_t count = CountRays(device, rays.origins, 3, kFloat, "origins");
+    if (CountRays(device, rays.directions, 3, kFloat, "directions") != count) {
+        throw Error("{} ray origins with {} directions", count, rays.directions.Shape()[0]);
+    }
+    if (count > int64_t(~uint32_t(0))) {
+        throw Error("A cast of {} rays; at most {} fit one cast", count, ~uint32_t(0));
+    }
+    RayCastParams params{};
+    params.origins.address = InputAddress(device, rays.origins, 3, kFloat, count, "origins");
+    params.directions.address =
+        InputAddress(device, rays.directions, 3, kFloat, count, "directions");
+    params.tMins.address = InputAddress(device, rays.tMins, 1, kFloat, count, "minimum distances");
+    params.tMaxes.address =
+        InputAddress(device, rays.tMaxes, 1, kFloat, count, "maximum distances");
+    params.worlds.address =
+        InputAddress(device, rays.worlds, 1, device::DType::UInt32, count, "worlds");
+    params.minDistance = rays.minDistance;
+    params.maxDistance = rays.maxDistance;
+    params.world = rays.world;
+    params.count = uint32_t(count);
+
+    const bool closest = desc.mode == RayCastMode::Closest;
+    const auto rows = [&](int64_t width) {
+        return width == 1 ? std::vector<int64_t>{count} : std::vector<int64_t>{count, width};
+    };
+    params.hits.address = Output(device, hits.hit, true, device::DType::UInt32, rows(1));
+    params.distances.address =
+        Output(device, hits.distance, closest && desc.outputs & RayOutput::Distance,
+               device::DType::Float32, rows(1));
+    params.prims.address = Output(device, hits.prim, closest && desc.outputs & RayOutput::Prim,
+                                  device::DType::UInt32, rows(1));
+    params.instances.address =
+        Output(device, hits.instance, closest && desc.outputs & RayOutput::InstanceId,
+               device::DType::Int64, rows(1));
+    params.normals.address =
+        Output(device, hits.normal, closest && desc.outputs & RayOutput::Normal,
+               device::DType::Float32, rows(3));
+    params.positions.address =
+        Output(device, hits.position, closest && desc.outputs & RayOutput::Position,
+               device::DType::Float32, rows(3));
+
+    params.spaceRow = kNoRow;
+    if (rays.space) {
+        if (!rays.space->IsA<Xformable>()) {
+            throw Error("rays are cast in the space of {}, which has no transform",
+                        rays.space->Path());
+        }
+    }
+    const std::vector<uint32_t> ignored = IgnoredPrims(desc.ignore);
+    params.ignoredCount = uint32_t(ignored.size());
+
+    if (rays.space) {
+        const uint32_t prim = rays.space->Index();
+        params.spaceRow = SceneImpl::Get(scene).GetStructure().GetPrims().Rows(
+            std::span<const uint32_t>(&prim, 1), SchemaId::Xformable)[0];
+    }
+    if (count == 0) {
+        hits.done = update.Published();
+        return hits.done;
+    }
+    const Snapshot& snapshot = update.Tables();
+    params.tables.address = snapshot.tables;
+    device::Queue& queue = device.GetQueue();
+    if (!ignored.empty()) {
+        params.ignored.address =
+            queue.Upload(ignored.data(), ignored.size() * sizeof(uint32_t)).Address();
+    }
+    queue.Follow(stream);
+    device::CommandEncoder encoder = queue.CreateEncoder();
+    encoder.BeginZone(profiler::ZoneId::Named(desc.label));
+    encoder.Dispatch(m_state->program->Entry(closest ? "CastClosest" : "CastAny"), params,
+                     {.x = device::GroupCount(params.count, kRayCastGroup)});
+    encoder.EndZone();
+    hits.done = queue.Submit(encoder.Finish());
+    if (!stream.IsNone()) {
+        hits.done.Wait(stream);
+    }
+    return hits.done;
+}
+
+Scene& RayCaster::GetScene() const {
+    return *m_state->scene;
+}
+
+RayHits RayCaster::Cast(const Rays& rays, const RayCastDesc& desc) {
+    RayHits hits;
+    Cast(rays, hits, desc, Stream::Host());
+    return hits;
+}
+
+}

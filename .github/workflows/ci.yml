@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release-*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  docs:
+    uses: ./.github/workflows/docs.yml
+
+  pages:
+    needs: [docs, coverage]
+    if: >
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.docs.result == 'success'
+    uses: ./.github/workflows/docs-deploy.yml
+    with:
+      version: dev
+      coverage: ${{ needs.coverage.result == 'success' }}
+    permissions:
+      contents: write
+
+  build:
+    uses: ./.github/workflows/build.yml
+
+  coverage:
+    uses: ./.github/workflows/coverage.yml
+
+  packages:
+    uses: ./.github/workflows/packages.yml
+
+  wheels:
+    uses: ./.github/workflows/wheels.yml
+
+  docker:
+    needs: [lint, build]
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+CUDA=${CUDA_ROOT:-/usr/local/cuda-12.8}
+PYTHON=${PYTHON:-$ROOT/envs/madrona/.venv/bin/python}
+JOBS=${JOBS:-4}
+
+if [[ ! -x $PYTHON ]]; then
+    echo "no python at $PYTHON, run: scripts/make-env madrona --python <python3.12>" >&2
+    exit 1
+fi
+
+cmake -S "$ROOT/native/madrona" -B "$ROOT/native/madrona/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCUDAToolkit_ROOT="$CUDA" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DPython_EXECUTABLE="$PYTHON"
+cmake --build "$ROOT/native/madrona/build" -j "$JOBS" --target _madrona_bench

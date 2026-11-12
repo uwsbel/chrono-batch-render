@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <set>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "chrono_batch_render/device/program.h"
+#include "chrono_batch_render/device/ref.h"
+#include "chrono_batch_render/graph/library.h"
+#include "chrono_batch_render/material/codegen.h"
+#include "chrono_batch_render/material/node.h"
+#include "chrono_batch_render/scene/records/materials.h"
+#include "chrono_batch_render/scene/tables/connections.h"
+#include "chrono_batch_render/scene/tables/pack.h"
+#include "chrono_batch_render/scene/tables/storage.h"
+#include "chrono_batch_render/scene/tables/table.h"
+#include "chrono_batch_render/stage/structure/structure.h"
+
+namespace chrono::batch_render {
+
+class TextureTable;
+
+class MaterialTable : public RenderTable {
+  public:
+    MaterialTable(Structure& structure, const TextureTable& textures)
+        : m_structure(structure), m_textures(textures) {}
+
+    std::string_view Name() const override {
+        return "materials";
+    }
+
+    std::span<const ColumnRef> Inputs() const override;
+
+    std::span<const TableId> TableInputs() const override {
+        static constexpr TableId kTables[] = {TableId::Textures};
+        return kTables;
+    }
+
+    void Prepare() override;
+
+    bool Pending() const override {
+        return m_nodeVersion != material::MaterialNodeVersion();
+    }
+
+    void Run(const ChangeSet& changes, TableVersions& versions) override;
+    void Describe(RenderTables& tables) const override;
+
+    void Hold(std::vector<Ref<const RefCounted>>& held) const override {
+        HoldBuffers(held, {m_records.Buffer(), m_words.Buffer(), m_checkers.Buffer(),
+                           m_temperatures.Buffer(), m_radios.Buffer()});
+    }
+
+    const MaterialRecord& Record(uint32_t prim) const {
+        return m_records.Row(prim);
+    }
+
+    uint32_t Resolves() const {
+        return m_resolves;
+    }
+
+    const material::MaterialDefinitionSetRef& Definitions() const {
+        return m_definitions;
+    }
+
+  private:
+    using Connection = ConnectionCache::Connection;
+
+    struct Binding {
+        uint32_t texture = kNoPrim;
+        uint32_t low = 0;
+        uint32_t high = 0;
+    };
+
+    struct Carry {
+        uint32_t from = 0;
+        uint32_t to = 0;
+        uint32_t words = 0;
+    };
+
+    struct RadarLink {
+        uint32_t material = kNoPrim;
+        uint32_t row = 0;
+    };
+
+    struct Reached {
+        uint32_t prim = kNoPrim;
+        std::shared_ptr<const material::MaterialNodeDefinition> node;
+        std::vector<material::InputBinding> inputs;
+        std::vector<Connection> textures;
+        std::vector<uint32_t> spectra;
+    };
+
+    void Resolve(const ChangeSet& changes);
+    void ResolveMaterial(uint32_t material);
+    void ResolvePreview(uint32_t material, uint32_t shader);
+    void ResolveNode(uint32_t material, uint32_t shader,
+                     std::shared_ptr<const material::MaterialNodeDefinition> surface);
+    std::vector<Reached>
+    ReachNodes(uint32_t shader, std::shared_ptr<const material::MaterialNodeDefinition> surface);
+    std::vector<uint32_t> OrderPatterns(std::vector<Reached>& reached) const;
+    bool BindTexture(uint32_t shader, const Connection& connection, std::string_view input,
+                     bool color, uint32_t slot, TextureChannel& channel);
+    void CarryPrevious(const std::vector<MaterialRecord>& before);
+    void Define(uint32_t material, uint32_t definition, uint32_t words);
+    void WarnOutsideVisible();
+    void ResolveRadios();
+    void WriteRadios();
+    void ResolvePlacement(uint32_t placement, uint32_t mapping);
+    uint32_t PackDetail(uint32_t shader, uint32_t detail, uint32_t textures);
+    bool ResolvePlanetary(uint32_t material, uint32_t shader);
+    bool Restructured(const ChangeSet& changes) const;
+    bool Changed(SchemaId schema) const;
+    std::span<const Connection> Connections(uint32_t prim);
+    void CopyCell(ColumnRef column, uint32_t prim, uint32_t destination);
+    void BuildEntries();
+    device::Program& Kernels();
+
+    Structure& m_structure;
+    const TextureTable& m_textures;
+    Ref<device::Program> m_program;
+    RecordTable<MaterialRecord> m_records{"material records"};
+    DeviceTable<uint32_t> m_words{"material words"};
+    PackPlan m_pack{"material"};
+    std::vector<Binding> m_bindings;
+    std::vector<Carry> m_carries;
+    ConnectionCache m_connections{m_structure, {SchemaId::Connectable}};
+    std::vector<bool> m_touched;
+    uint64_t m_writes = 0;
+    std::vector<RadarLink> m_radarLinks;
+    Ref<device::Buffer> m_carried;
+    graph::DefinitionLibrary<material::MaterialDefinition> m_library{
+        material::kFirstGeneratedDefinition};
+    std::vector<uint32_t> m_generations;
+    std::set<uint32_t> m_spectral;
+    std::set<std::pair<uint64_t, uint64_t>> m_warned;
+    mutable std::vector<ColumnRef> m_inputs;
+    mutable uint32_t m_inputSchemas = 0;
+    uint64_t m_nodeVersion = material::MaterialNodeVersion();
+    uint32_t m_wordCount = 0;
+    uint32_t m_resolves = 0;
+    material::MaterialDefinitionSetRef m_definitions =
+        std::make_shared<const material::MaterialDefinitionSet>();
+    DeviceTable<CheckerRecord> m_checkers{"checkerboard records"};
+    DeviceTable<float> m_temperatures{"temperatures"};
+    uint32_t m_temperaturePrimvar = 0;
+    RecordTable<RadioRecord> m_radios{"radio materials"};
+};
+
+}

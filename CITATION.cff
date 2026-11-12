@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use Chrono Batch Render for published research, please cite it as below."
+type: software
+title: "Chrono Batch Render"
+abstract: >-
+  Chrono Batch Render is a physically-based, real-time, spectral renderer for planetary robotics and
+  sensing, with C++ and Python APIs.
+authors:
+  - family-names: Maietta
+    given-names: Alex
+repository-code: "https://github.com/uwsbel/chrono-batch-render"
+url: "https://uwsbel.github.io/chrono-batch-render/"
+license: BSD-3-Clause
+version: 0.1.0
+keywords:
+  - rendering
+  - ray tracing
+  - path tracing
+  - spectral rendering
+  - planetary science
+  - robotics
+  - simulation

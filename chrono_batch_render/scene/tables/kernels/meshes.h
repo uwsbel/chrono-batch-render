@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#pragma once
+
+#include "chrono_batch_render/scene/records/prims.h"
+#include "chrono_batch_render/scene/records/transforms.h"
+
+namespace chrono::batch_render {
+
+struct NormalsShape {
+    Ptr<Float3> points;
+    Ptr<uint> triangles;
+    Ptr<uint> starts;
+    Ptr<uint> adjacency;
+    Ptr<Float3> normals;
+    Ptr<Float3> bounds;
+    uint first;
+    uint count;
+    uint covered;
+    uint padding;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(NormalsShape, 64);
+
+struct NormalsParams {
+    Ptr<NormalsShape> shapes;
+    Ptr<uint> extents;
+    uint shapeCount;
+    uint total;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(NormalsParams, 24);
+
+static const uint kNormalsGroup = 64;
+
+struct TopologyJob {
+    Ptr<int> indices;
+    Ptr<int> counts;
+    Ptr<int> holes;
+    Ptr<uint> triangles;
+    Ptr<uint> corners;
+    Ptr<uint> faces;
+    Ptr<uint> starts;
+    Ptr<uint> adjacency;
+    uint indexCount;
+    uint faceCount;
+    uint firstFace;
+    uint triangleCount;
+    uint covered;
+    uint firstCorner;
+    uint firstPoint;
+    uint holeCount;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(TopologyJob, 96);
+
+struct TriangulateParams {
+    Ptr<TopologyJob> jobs;
+    Ptr<TopologyJob> emitted;
+    Ptr<uint> work;
+    Ptr<uint> holes;
+    Ptr<uint> faceStarts;
+    Ptr<uint> triangleStarts;
+    Ptr<uint> sizes;
+    Ptr<uint> keys;
+    Ptr<uint> values;
+    Ptr<uint> histogram;
+    Ptr<uint> pointStarts;
+    uint jobCount;
+    uint emittedCount;
+    uint faceCount;
+    uint cornerCount;
+    uint pointCount;
+    uint holeCount;
+};
+
+CHRONO_BATCH_RENDER_CHECK_SIZE(TriangulateParams, 112);
+
+static const uint kTopologyGroup = 64;
+
+}

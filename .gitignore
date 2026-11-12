@@ -1,0 +1,16 @@
+_*/
+!docs/_src/
+build*/
+site/
+*.log
+*.venv
+.venv*/
+*.ruff_cache
+*.pytest_cache
+*.mypy_cache
+TODO.md
+__pycache__/
+python/chrono_batch_render/_core*/
+tests/bench/data/
+paper/
+docs/_src/coverage/report/

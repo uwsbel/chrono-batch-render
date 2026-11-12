@@ -1,0 +1,381 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "chrono_batch_render/import/importer.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "chrono_batch_render/scene/scene.h"
+#include "chrono_batch_render/util/error.h"
+#include "support/devices.h"
+#include "support/support.h"
+
+namespace chrono::batch_render {
+namespace {
+
+using device::Device;
+using test::ForEachDevice;
+
+constexpr std::string_view kObj = R"(mtllib shapes.mtl
+o Quad
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+vn 0 0 1
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+usemtl red
+f 1/1/1 2/2/1 3/3/1 4/4/1
+o Tri
+v 0 0 1
+v 2 0 1
+v 0 2 1
+f -3 -2 -1
+)";
+
+constexpr std::string_view kMtl = R"(newmtl red
+Kd 1 0 0
+map_Kd missing.png
+)";
+
+FileBytes Bytes(std::string_view text) {
+    auto bytes = std::make_shared<std::vector<std::byte>>(text.size());
+    std::transform(text.begin(), text.end(), bytes->begin(), [](char c) { return std::byte(c); });
+    return bytes;
+}
+
+ImportSource Shapes(std::string_view obj = kObj) {
+    return {.file = "shapes.obj",
+            .files = {{"shapes.obj", Bytes(obj)}, {"shapes.mtl", Bytes(kMtl)}}};
+}
+
+std::vector<Prim> Meshes(const Prim& root) {
+    std::vector<Prim> meshes;
+    std::vector<Prim> pending = {root};
+    while (!pending.empty()) {
+        const Prim prim = pending.back();
+        pending.pop_back();
+        if (prim.IsA<Mesh>()) {
+            meshes.push_back(prim);
+        }
+        for (const Prim& child : prim.Children()) {
+            pending.push_back(child);
+        }
+    }
+    std::sort(meshes.begin(), meshes.end(),
+              [](const Prim& a, const Prim& b) { return a.Path() < b.Path(); });
+    return meshes;
+}
+
+Quatd Orient(Scene& scene, const Prim& prim) {
+    return scene.Select(prim).Get<Quatd>("orient").Get().at(0);
+}
+
+Float3 Scale(Scene& scene, const Prim& prim) {
+    return scene.Select(prim).Get<Float3>("scale").Get().at(0);
+}
+
+TEST(ImportTest, ReadsObjMeshesTurnedZUpAndScaled) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        const Prim root = scene->Import("/Shapes", Shapes(), {.synchronous = true}).Wait();
+        EXPECT_EQ(root.Path(), "/Shapes");
+        const std::vector<Prim> meshes = Meshes(root);
+        ASSERT_EQ(meshes.size(), 2u);
+        EXPECT_EQ(scene->Select(meshes[0]).GetArray<Float3>("points").Get(0).size(), 4u);
+        EXPECT_EQ(scene->Select(meshes[1]).GetArray<Float3>("points").Get(0).size(), 3u);
+        EXPECT_EQ(scene->Select(meshes[0]).GetArray<Float3>("points").Get(0)[2], (Float3{1, 1, 0}));
+        const double half = std::sqrt(0.5);
+        EXPECT_EQ(Orient(*scene, root), (Quatd{half, 0, 0, half}));
+        EXPECT_EQ(Scale(*scene, root), (Float3{1, 1, 1}));
+
+        const Prim zUp =
+            scene->Import("/ZUp", Shapes(), {.synchronous = true, .up = UpAxis::Z}).Wait();
+        EXPECT_EQ(Orient(*scene, zUp), Quatd{});
+
+        const Prim scaled =
+            scene->Import("/Scaled", Shapes(), {.synchronous = true, .metersPerUnit = 0.01f})
+                .Wait();
+        EXPECT_EQ(Scale(*scene, scaled), (Float3{0.01f, 0.01f, 0.01f}));
+    });
+}
+
+TEST(ImportTest, ObjMaterialsWithinAShapeBecomeGeomSubsets) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        constexpr std::string_view kTwoLooks = R"(mtllib shapes.mtl
+o Strip
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+v 2 0 0
+v 2 1 0
+usemtl red
+f 1 2 3 4
+usemtl blue
+f 2 5 6 3
+usemtl none
+f 1 3 4
+)";
+        ImportSource source = Shapes(kTwoLooks);
+        source.files["shapes.mtl"] = Bytes("newmtl red\nKd 1 0 0\nnewmtl blue\nKd 0 0 1\n");
+        const test::CapturedLog log(LogLevel::Warning);
+        const Prim root = scene->Import("/Strip", source, {.synchronous = true}).Wait();
+        EXPECT_TRUE(std::ranges::any_of(log.Messages(), [](const auto& message) {
+            return message.second.ends_with("material [ 'none' ] not found in .mtl");
+        }));
+        const std::vector<Prim> meshes = Meshes(root);
+        ASSERT_EQ(meshes.size(), 1u);
+        EXPECT_EQ(scene->Select(meshes[0]).GetArray<Float3>("points").Get(0).size(), 6u);
+        EXPECT_TRUE(MeshPrim(meshes[0]).MaterialBinding().empty());
+        std::vector<GeomSubsetPrim> subsets;
+        for (const Prim& child : meshes[0].Children()) {
+            if (child.IsA<GeomSubset>()) {
+                subsets.emplace_back(child);
+            }
+        }
+        ASSERT_EQ(subsets.size(), 2u);
+        for (const GeomSubsetPrim& subset : subsets) {
+            EXPECT_EQ(subset.FamilyName(), "materialBind");
+            ASSERT_EQ(subset.MaterialBinding().size(), 1u);
+            const bool red = subset.MaterialBinding()[0].ends_with("red");
+            EXPECT_EQ(subset.Indices(), (std::vector<int32_t>{red ? 0 : 1}));
+        }
+    });
+}
+
+TEST(ImportTest, ObjSmoothingGroupsVertexColorsAndTextureOptions) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        constexpr std::string_view kFolded = R"(mtllib shapes.mtl
+o Folded
+v 0 0 0 1 0 0
+v 1 0 0 0 1 0
+v 1 1 0 0 0 1
+v 0 1 1 1 1 1
+usemtl tiled
+s 1
+f 1 2 3
+f 1 3 4
+o Flat
+v 0 0 2 1 0 0
+v 1 0 2 0 1 0
+v 0 1 2 0 0 1
+s off
+f 5 6 7
+)";
+        ImportSource source = Shapes(kFolded);
+        source.files["shapes.mtl"] =
+            Bytes("newmtl tiled\nmap_Kd -s 2 3 1 albedo.png\nmap_Pr -clamp on rough.png\n");
+        source.files["albedo.png"] = Bytes("albedo");
+        source.files["rough.png"] = Bytes("rough");
+        const Prim root = scene->Import("/Folded", source, {.synchronous = true}).Wait();
+        const std::vector<Prim> meshes = Meshes(root);
+        ASSERT_EQ(meshes.size(), 2u);
+
+        const std::vector<Float3> flat =
+            scene->Select(meshes[0]).GetArray<Float3>("normals").Get(0);
+        EXPECT_TRUE(flat.empty());
+        const std::vector<Float3> smooth =
+            scene->Select(meshes[1]).GetArray<Float3>("normals").Get(0);
+        ASSERT_EQ(smooth.size(), 6u);
+        EXPECT_EQ(smooth[0], smooth[3]);
+        EXPECT_EQ(smooth[2], smooth[4]);
+        EXPECT_NE(smooth[1], smooth[5]);
+
+        bool colored = false;
+        for (const Primvar& primvar : MeshPrim(meshes[1]).Primvars()) {
+            if (primvar.name == "displayColor") {
+                colored = true;
+                EXPECT_EQ(primvar.interpolation, Interpolation::Vertex);
+                EXPECT_EQ(primvar.Values<Float3>().at(1), (Float3{0, 1, 0}));
+            }
+        }
+        EXPECT_TRUE(colored);
+
+        const TexturePlacementPrim tiled(*scene->Find("/Folded/Looks/tiled/Placement"));
+        EXPECT_EQ(tiled.UvScale(), (Float2{2, 3}));
+        const TexturePlacementPrim plain(*scene->Find("/Folded/Looks/tiled/Placement_2"));
+        EXPECT_EQ(plain.UvScale(), (Float2{1, 1}));
+        EXPECT_EQ(UsdUVTexturePrim(*scene->Find("/Folded/Looks/tiled/DiffuseColorTexture")).WrapS(),
+                  TextureWrapMode::Repeat);
+        EXPECT_EQ(UsdUVTexturePrim(*scene->Find("/Folded/Looks/tiled/RoughnessTexture")).WrapS(),
+                  TextureWrapMode::Clamp);
+    });
+}
+
+TEST(ImportTest, RejectsBrokenAndUnknownFiles) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        EXPECT_THROW(
+            scene->Import("/Bad", Shapes("v 0 0 0\nf 1 2 9\n"), {.synchronous = true}).Wait(),
+            Error);
+        ImportSource unknown = Shapes();
+        unknown.file = "shapes.xyz";
+        EXPECT_THROW(scene->Import("/Unknown", unknown, {.synchronous = true}).Wait(), Error);
+        EXPECT_FALSE(scene->Find("/Bad"));
+    });
+}
+
+TEST(ImportTest, CustomReadersReportProgressAndCanBeCancelled) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        std::vector<uint64_t> reported;
+        const ImportReader reader{.name = "boxes", .read = [](ImportContext& context) {
+                                      ImportPlan plan;
+                                      plan.Define<Xform>("/Boxes");
+                                      for (uint64_t i = 0; i < 3; ++i) {
+                                          context.Report("boxes", i + 1, 3);
+                                          plan.Define<Cube>("/Boxes/Box" + std::to_string(i));
+                                      }
+                                      plan.AddFile("notes.txt", Bytes("hello"));
+                                      EXPECT_EQ(plan.PrimCount(), 4u);
+                                      return plan;
+                                  }};
+        const Prim root = scene
+                              ->Import("/Boxes", reader,
+                                       {.progress =
+                                            [&](const ImportProgress& progress) {
+                                                reported.push_back(progress.done);
+                                            },
+                                        .synchronous = true})
+                              .Wait();
+        EXPECT_EQ(root.Children().size(), 3u);
+        EXPECT_TRUE(scene->Find("/Boxes/Box2"));
+        EXPECT_FALSE(reported.empty());
+
+        std::atomic<bool> started = false;
+        const ImportReader waiting{.name = "waiting", .read = [&](ImportContext& context) {
+                                       started = true;
+                                       while (!context.Cancelled()) {
+                                       }
+                                       ImportPlan partial;
+                                       partial.Define<Xform>("/Waiting");
+                                       return partial;
+                                   }};
+        ImportJob job = scene->Import("/Waiting", waiting, {});
+        while (!started) {
+        }
+        job.Cancel();
+        EXPECT_THROW(job.Wait(), CancelledError);
+        EXPECT_FALSE(scene->Find("/Waiting"));
+        EXPECT_TRUE(job.Ready());
+    });
+}
+
+TEST(ImportTest, RegistersImportersByExtension) {
+    const std::vector<std::string> extensions = ImporterExtensions();
+    EXPECT_NE(std::find(extensions.begin(), extensions.end(), ".obj"), extensions.end());
+    EXPECT_NE(FindImporter(".OBJ"), nullptr);
+    EXPECT_EQ(FindImporter(".nothing"), nullptr);
+
+    class Nothing final : public Importer {
+      public:
+        std::string Name() const override {
+            return "nothing";
+        }
+
+        std::vector<std::string> Extensions() const override {
+            return {".nothing"};
+        }
+
+        ImportPlan Read(std::string_view, const ImportSource&, ImportContext&) override {
+            return {};
+        }
+    };
+
+    RegisterImporter(std::make_shared<Nothing>());
+    ASSERT_NE(FindImporter(".nothing"), nullptr);
+    EXPECT_EQ(FindImporter(".nothing")->Name(), "nothing");
+    UnregisterImporter(".nothing");
+    EXPECT_EQ(FindImporter(".nothing"), nullptr);
+}
+
+class Shifter final : public Importer {
+  public:
+    explicit Shifter(std::string name) : m_name(std::move(name)) {}
+
+    std::string Name() const override {
+        return m_name;
+    }
+
+    std::vector<std::string> Extensions() const override {
+        return {".shift"};
+    }
+
+    std::vector<ImportOption> Options() const override {
+        return {{.name = "shift", .value = 2.0},
+                {.name = "axis", .value = std::string("x"), .choices = {"x", "y"}}};
+    }
+
+    ImportPlan Read(std::string_view path, const ImportSource&, ImportContext& context) override {
+        const double shift = std::get<double>(context.Option("shift").value());
+        ImportPlan plan;
+        plan.Define<Xform>(std::string(path), {.translate = {shift, 0, 0}});
+        return plan;
+    }
+
+  private:
+    std::string m_name;
+};
+
+TEST(ImportTest, KeepsEveryImporterOfAnExtensionWithTheLastAsDefault) {
+    RegisterImporter(std::make_shared<Shifter>("first"));
+    RegisterImporter(std::make_shared<Shifter>("second"));
+    std::vector<std::string> names;
+    for (const std::shared_ptr<Importer>& importer : FindImporters(".SHIFT")) {
+        names.push_back(importer->Name());
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"second", "first"}));
+    EXPECT_EQ(FindImporter(".shift")->Name(), "second");
+
+    RegisterImporter(std::make_shared<Shifter>("first"));
+    EXPECT_EQ(FindImporters(".shift").size(), 2u);
+    EXPECT_EQ(FindImporter(".shift")->Name(), "first");
+
+    UnregisterImporter(".shift", "first");
+    EXPECT_EQ(FindImporter(".shift")->Name(), "second");
+    UnregisterImporter(".shift");
+    EXPECT_TRUE(FindImporters(".shift").empty());
+}
+
+TEST(ImportTest, PassesOptionsToTheImporterOverItsOwnValues) {
+    RegisterImporter(std::make_shared<Shifter>("shifter"));
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        const ImportSource source{.file = "thing.shift"};
+        const Prim kept = scene->Import("/Kept", source, {.synchronous = true}).Wait();
+        EXPECT_EQ(scene->Select(kept).Get<Double3>("translate").Get().at(0), (Double3{2, 0, 0}));
+
+        const Prim moved = scene
+                               ->Import("/Moved", source,
+                                        {.synchronous = true, .options = {{"shift", int64_t(5)}}})
+                               .Wait();
+        EXPECT_EQ(scene->Select(moved).Get<Double3>("translate").Get().at(0), (Double3{5, 0, 0}));
+
+        EXPECT_THROW(
+            scene->Import("/Unknown", source, {.synchronous = true, .options = {{"spin", true}}}),
+            Error);
+        EXPECT_THROW(
+            scene->Import("/Mistyped", source, {.synchronous = true, .options = {{"shift", true}}}),
+            Error);
+        EXPECT_THROW(scene->Import("/Unlisted", source,
+                                   {.synchronous = true, .options = {{"axis", std::string("z")}}}),
+                     Error);
+    });
+    UnregisterImporter(".shift");
+}
+
+}
+}

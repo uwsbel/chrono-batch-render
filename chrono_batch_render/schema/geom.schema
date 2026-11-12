@@ -1,0 +1,712 @@
+abstract class Typed (
+    doc = "The root of every typed schema."
+) {}
+
+api class MaterialBindingAPI (
+    doc = "Binds a material to a prim and, unless they bind their own, its descendants."
+) {
+    prim[] material:binding (
+        group = "Material"
+        displayName = "Material"
+        doc = "The bound Material. Only the first target is used."
+    )
+}
+
+multiple api class CollectionAPI (
+    doc = "A named set of prims, such as the prims a light lights, given by the prims it includes and excludes."
+) {
+    bool collection:__INSTANCE_NAME__:includeRoot = false (
+        group = "Collection"
+        displayName = "Include Root"
+        doc = "Include every prim that no include or exclude decides."
+    )
+    prim[] collection:__INSTANCE_NAME__:includes (
+        group = "Collection"
+        displayName = "Includes"
+        doc = "Prims in the collection, with their descendants unless expansionRule is explicitOnly."
+    )
+    prim[] collection:__INSTANCE_NAME__:excludes (
+        group = "Collection"
+        displayName = "Excludes"
+        doc = "Prims left out of the collection, with their descendants unless expansionRule is explicitOnly. A prim counts by its nearest listed ancestor, and an exclude wins a tie."
+    )
+    token collection:__INSTANCE_NAME__:expansionRule = expandPrims (
+        allowed = [explicitOnly, expandPrims, expandPrimsAndProperties]
+        group = "Collection"
+        displayName = "Expansion Rule"
+        doc = "explicitOnly takes the listed prims alone. expandPrims also takes their descendants, and expandPrimsAndProperties does the same for prims."
+    )
+}
+
+multiple api class SemanticsLabelsAPI (
+    appliesTo = [Imageable, GeomSubset]
+    doc = "Semantic labels of a prim and its descendants, one list per taxonomy such as class. Descendants without labels in a taxonomy take their nearest labeled ancestor's."
+) {
+    token[] semantics:labels:__INSTANCE_NAME__ (
+        group = "Semantics"
+        displayName = "Labels"
+        doc = "The labels in the taxonomy the instance names."
+    )
+}
+
+abstract class Imageable : Typed, MaterialBindingAPI (
+    doc = "A prim that can be rendered or seen."
+) {
+    token visibility = inherited (
+        allowed = [inherited, invisible]
+        group = "Visibility"
+        displayName = "Visibility"
+        doc = "Invisible hides the prim and its subtree."
+    )
+    token purpose = default (
+        allowed = [default, render, proxy, guide]
+        group = "Visibility"
+        displayName = "Purpose"
+        doc = "Which renders include the prim. Default inherits the parent's purpose."
+    )
+}
+
+class Scope : Imageable (
+    doc = "A grouping prim with no transform."
+) {}
+
+api class MotionAPI (
+    appliesTo = [Xformable]
+    doc = "How a prim and its descendants move, for sensors that measure velocity such as radar, and how they blur, as USD's MotionAPI gives it. A prim without it moves with its nearest ancestor that has it, and is still when none does. Rendering doesn't move or blur anything by it yet."
+) {
+    vector3f motion:velocity = (0, 0, 0) (
+        group = "Motion"
+        displayName = "Velocity"
+        doc = "The world-space velocity of the prim's origin, in meters per second."
+    )
+    vector3f motion:angularVelocity = (0, 0, 0) (
+        group = "Motion"
+        displayName = "Angular Velocity"
+        doc = "The world-space angular velocity about the prim's origin, in degrees per second as UsdPhysics gives it."
+    )
+    float motion:blurScale = 1 (
+        group = "Motion"
+        displayName = "Blur Scale"
+        min = 0
+        doc = "Scales the motion blur of the prim and its descendants. 0 renders them sharp and 1 blurs them as they move. Rendering doesn't use it yet."
+    )
+    int motion:nonlinearSampleCount = 3 (
+        group = "Motion"
+        displayName = "Nonlinear Sample Count"
+        min = 2
+        doc = "Positions sampled across the shutter for motion that isn't linear, such as points with accelerations or instances with angular velocities. Rendering doesn't use it yet."
+    )
+}
+
+api class ThermalAPI (
+    appliesTo = [Gprim]
+    doc = "A gprim's temperature, which makes it glow in thermal cameras by its material's emissivity. A simulation may write it every step, and a chrono:temperature float primvar overrides it per vertex or face. Gprims without it don't emit heat."
+) {
+    float chrono:thermal:temperature = 293.15 (
+        unit = kelvin
+        group = "Thermal"
+        displayName = "Temperature"
+        min = 0
+        doc = "The surface temperature in kelvin."
+    )
+}
+
+api class PrototypeAPI (
+    appliesTo = [Xformable]
+    doc = "Draws a prototype root's subtree at this prim's transform, as one copy that shares the prototype's geometry. USD's instanceable prims map onto it."
+) {
+    prim[] prototype (
+        group = "Instancing"
+        displayName = "Prototype"
+        doc = "The prototype root to draw. Only the first target is used, and prims at or under it are drawn only through instancers."
+    )
+}
+
+api class FollowAPI (
+    appliesTo = [Xformable]
+    doc = "Places a prim by another prim's world transform instead of its parent's. The follow frame takes its position and orientation from the target, as the translate and rotate modes pick, then the offset, lag and weight apply, and the prim's own transform composes on top. Followers may follow followers, and a cycle of them follows nothing."
+) {
+    prim[] chrono:follow:target (
+        group = "Follow"
+        displayName = "Target"
+        doc = "The Xformable prim to follow. Only the first target is used, and without one the prim follows its parent as usual."
+    )
+    prim[] chrono:follow:path (
+        group = "Follow Path"
+        displayName = "Path"
+        doc = "A BasisCurves prim to ride in place of target. The follow frame sits on its curve at pathPosition, with +x along the curve and +z toward up. Only the first path is used."
+    )
+    token chrono:follow:pathMode = distance (
+        allowed = [distance, parameter]
+        enum = FollowPathMode
+        group = "Follow Path"
+        displayName = "Path Mode"
+        doc = "How pathPosition is measured. distance is meters along the curve from its start, and parameter runs from 0 at the start to 1 at the end, evenly across its spans."
+    )
+    float chrono:follow:pathPosition = 0 (
+        group = "Follow Path"
+        displayName = "Path Position"
+        doc = "Where on the path the frame sits, as pathMode measures it. Periodic curves wrap around, and others stop at their ends."
+    )
+    float chrono:follow:pathSpeed = 0 (
+        group = "Follow Path"
+        displayName = "Path Speed"
+        doc = "How fast the frame moves along the path from pathPosition as the scene's clock advances, in meters per second with pathMode distance or parameter per second with parameter. Writing pathPosition or resetting the clock starts it over from there."
+    )
+    int chrono:follow:pathCurve = 0 (
+        group = "Follow Path"
+        displayName = "Path Curve"
+        doc = "Which curve of the path's prim to ride."
+    )
+    prim[] chrono:follow:lookAt (
+        group = "Follow"
+        displayName = "Look At"
+        doc = "The prim rotate mode lookAt aims at. Only the first target is used."
+    )
+    token chrono:follow:translate = inherit (
+        allowed = [inherit, none]
+        enum = FollowTranslate
+        group = "Follow"
+        displayName = "Translate"
+        doc = "Where the follow frame's position comes from. inherit takes the target's and none the parent's."
+    )
+    token chrono:follow:rotate = inherit (
+        allowed = [inherit, yaw, none, lookAt]
+        enum = FollowRotate
+        group = "Follow"
+        displayName = "Rotate"
+        doc = "Where the follow frame's orientation comes from. inherit takes the target's, yaw only its heading about world +z, none the parent's, and lookAt aims the frame's -z at lookAt with +y toward up."
+    )
+    token chrono:follow:up = world (
+        allowed = [world, target]
+        enum = FollowUp
+        group = "Follow"
+        displayName = "Up"
+        doc = "The up direction lookAt and paths keep. world is +z and target the target's or path's own +z, so a rolling target rolls the aim."
+    )
+    bool chrono:follow:inheritScale = false (
+        group = "Follow"
+        displayName = "Inherit Scale"
+        doc = "Takes the target's scale instead of the parent's."
+    )
+    float3 chrono:follow:offset:translate = (0, 0, 0) (
+        unit = meters
+        group = "Follow Offset"
+        displayName = "Translate"
+        doc = "Where the follow frame sits in the target's frame, such as behind and above it for a chase camera. lookAt aims from here."
+    )
+    quatd chrono:follow:offset:orient = (0, 0, 0, 1) (
+        group = "Follow Offset"
+        displayName = "Orient"
+        doc = "A rotation after the follow frame's, as a unit quaternion in xyzw order."
+    )
+    float3 chrono:follow:offset:scale = (1, 1, 1) (
+        group = "Follow Offset"
+        displayName = "Scale"
+        doc = "Scale along each axis of the follow frame, times the scale it takes."
+    )
+    float3 chrono:follow:lookAtOffset:translate = (0, 0, 0) (
+        unit = meters
+        group = "Follow Offset"
+        displayName = "Look At Translate"
+        doc = "The point lookAt aims at, in the lookAt prim's own frame."
+    )
+    float3 chrono:follow:positionLag = (0, 0, 0) (
+        unit = seconds
+        group = "Follow Lag"
+        displayName = "Position Lag"
+        doc = "How long the position takes to close about 63% of the way to the follow frame along each of its axes. 0 follows rigidly."
+    )
+    float chrono:follow:rotationLag = 0 (
+        unit = seconds
+        group = "Follow Lag"
+        displayName = "Rotation Lag"
+        min = 0
+        doc = "How long the orientation takes to close about 63% of the way to the follow frame's. 0 follows rigidly."
+    )
+    float chrono:follow:lagMaxDistance = 0 (
+        unit = meters
+        group = "Follow Lag"
+        displayName = "Lag Max Distance"
+        min = 0
+        doc = "The farthest the lagging position trails the follow frame. 0 leaves it unlimited."
+    )
+    float chrono:follow:weight = 1 (
+        group = "Follow"
+        displayName = "Weight"
+        min = 0
+        max = 1
+        doc = "Blends from the parent's frame at 0 to the follow frame at 1."
+    )
+}
+
+abstract class Xformable : Imageable (
+    doc = "A prim with a transform relative to its parent."
+) {
+    double3 xformOp:translate = (0, 0, 0) (
+        unit = meters
+        group = "Transform"
+        displayName = "Translate"
+        doc = "Translation from the parent."
+    )
+    quatd xformOp:orient = (0, 0, 0, 1) (
+        group = "Transform"
+        displayName = "Orient"
+        doc = "Rotation as a unit quaternion in xyzw order."
+    )
+    float3 xformOp:scale = (1, 1, 1) (
+        group = "Transform"
+        displayName = "Scale"
+        doc = "Scale along each local axis."
+    )
+    bool resetXformStack = false (
+        group = "Transform"
+        displayName = "Reset Transform Stack"
+        doc = "Ignore the parent transforms, placing the prim in world space."
+    )
+}
+
+class Xform : Xformable (
+    doc = "A transform with no geometry."
+) {}
+
+class World : Xformable (
+    doc = "The root of an isolated world. Its subtree sees only itself and global prims."
+) {}
+
+abstract class Boundable : Xformable (
+    doc = "A prim with a bounded extent."
+) {
+}
+
+abstract class Gprim : Boundable (
+    doc = "A geometric primitive that can be rendered."
+) {
+    color3f primvars:displayColor = (0.5, 0.5, 0.5) (
+        group = "Display"
+        displayName = "Display Color"
+        doc = "Color used without a bound material."
+    )
+    float primvars:displayOpacity = 1 (
+        group = "Display"
+        displayName = "Display Opacity"
+        min = 0
+        max = 1
+        doc = "Opacity used without a bound material."
+    )
+    primvars primvars (
+        group = "Primvars"
+        displayName = "Primvars"
+        doc = "Every other primvar, packed into one table: a count, a PrimvarEntry per primvar sorted by name, then their values and indices."
+    )
+    bool doubleSided = false (
+        group = "Geometry"
+        displayName = "Double Sided"
+        doc = "Whether camera rays see the back of each face. Other rays always see both sides."
+    )
+    token orientation = rightHanded (
+        allowed = [rightHanded, leftHanded]
+        group = "Geometry"
+        displayName = "Orientation"
+        doc = "Which side is the front. rightHanded makes faces whose points wind counterclockwise face the viewer, and leftHanded makes clockwise faces face the viewer."
+    )
+}
+
+class Sphere : Gprim (
+    doc = "A sphere centered at the origin."
+) {
+    float radius = 1 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Radius"
+        doc = "Radius of the sphere."
+    )
+}
+
+class Cube : Gprim (
+    doc = "A cube centered at the origin."
+) {
+    float size = 2 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Size"
+        doc = "Length of each edge."
+    )
+}
+
+class Cylinder : Gprim (
+    doc = "A capped cylinder centered at the origin, along axis."
+) {
+    float radius = 1 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Radius"
+        doc = "Radius of the cylinder."
+    )
+    float height = 2 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Height"
+        doc = "Length along axis, cap to cap."
+    )
+    token axis = Z (
+        allowed = [X, Y, Z]
+        group = "Geometry"
+        displayName = "Axis"
+        doc = "The axis the cylinder runs along."
+    )
+}
+
+class Cone : Gprim (
+    doc = "A capped cone centered at the origin, its apex toward +axis."
+) {
+    float radius = 1 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Radius"
+        doc = "Radius of the base."
+    )
+    float height = 2 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Height"
+        doc = "Length along axis, base to apex."
+    )
+    token axis = Z (
+        allowed = [X, Y, Z]
+        group = "Geometry"
+        displayName = "Axis"
+        doc = "The axis from the base to the apex."
+    )
+}
+
+class Capsule : Gprim (
+    doc = "A cylinder with hemispherical ends, centered at the origin, along axis."
+) {
+    float radius = 0.5 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Radius"
+        doc = "Radius of the cylinder and its hemispheres."
+    )
+    float height = 1 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Height"
+        doc = "Length of the cylinder between the hemispheres' centers."
+    )
+    token axis = Z (
+        allowed = [X, Y, Z]
+        group = "Geometry"
+        displayName = "Axis"
+        doc = "The axis the capsule runs along."
+    )
+}
+
+api class CheckerboardAPI (
+    doc = "Shades a plane with a checkerboard of two colors."
+) {
+    bool checkerboard = false (
+        group = "Checkerboard"
+        displayName = "Checkerboard"
+        doc = "Shade the plane with a checkerboard rather than displayColor."
+    )
+    color3f checkerColorA = (0.8, 0.8, 0.8) (
+        group = "Checkerboard"
+        displayName = "Color A"
+        enabledBy = "checkerboard"
+        doc = "Color of the square at the origin and every other square."
+    )
+    color3f checkerColorB = (0.2, 0.2, 0.2) (
+        group = "Checkerboard"
+        displayName = "Color B"
+        enabledBy = "checkerboard"
+        doc = "Color of the remaining squares."
+    )
+    float checkerSize = 1 (
+        unit = meters
+        group = "Checkerboard"
+        displayName = "Square Size"
+        enabledBy = "checkerboard"
+        doc = "Edge length of each square."
+    )
+}
+
+class Plane : Gprim, CheckerboardAPI (
+    doc = "A rectangle through the origin, facing along axis. A width or length of 0 makes it infinite."
+) {
+    float width = 2 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Width"
+        doc = "Size along the axis after axis, or infinite at 0."
+    )
+    float length = 2 (
+        unit = meters
+        group = "Geometry"
+        displayName = "Length"
+        doc = "Size along the axis before axis, or infinite at 0."
+    )
+    token axis = Z (
+        allowed = [X, Y, Z]
+        group = "Geometry"
+        displayName = "Axis"
+        doc = "The axis the plane faces along."
+    )
+}
+
+abstract class PointBased : Gprim (
+    doc = "Geometry defined by a set of points."
+) {
+    point3f[] points (
+        unit = meters
+        group = "Geometry"
+        displayName = "Points"
+        doc = "Point positions in local space."
+    )
+    normal3f[] normals (
+        group = "Geometry"
+        displayName = "Normals"
+        doc = "Shading normals, indexed as normalsInterpolation says."
+    )
+    vector3f[] velocities (
+        unit = meters
+        group = "Motion"
+        displayName = "Velocities"
+        doc = "The velocity of each point in local space, in meters per second, for motion blur. Empty leaves points still. Rendering doesn't use it yet."
+    )
+    vector3f[] accelerations (
+        group = "Motion"
+        displayName = "Accelerations"
+        doc = "The acceleration of each point in local space, in meters per second squared, for motion blur. Empty leaves velocities constant. Rendering doesn't use it yet."
+    )
+    token normalsInterpolation = vertex (
+        allowed = [
+            constant
+            uniform
+            varying
+            vertex
+            faceVarying
+        ]
+        enum = Interpolation
+        group = "Geometry"
+        displayName = "Normals Interpolation"
+        doc = "How normals map onto the geometry: one, one per face, one per point, or one per face vertex. USD's interpolation metadata on normals."
+    )
+}
+
+class Mesh : PointBased (
+    doc = "A polygon mesh."
+) {
+    int[] faceVertexIndices (
+        group = "Geometry"
+        displayName = "Face Vertex Indices"
+        doc = "Point index of each face vertex."
+    )
+    int[] faceVertexCounts (
+        group = "Geometry"
+        displayName = "Face Vertex Counts"
+        doc = "Number of vertices in each face."
+    )
+    int[] holeIndices (
+        group = "Geometry"
+        displayName = "Hole Indices"
+        doc = "Faces that are not drawn, as indices into faceVertexCounts."
+    )
+    token subdivisionScheme = catmullClark (
+        allowed = [catmullClark, loop, bilinear, none]
+        group = "Geometry"
+        displayName = "Subdivision Scheme"
+        doc = "The surface the faces describe. catmullClark and loop shade smooth with computed normals, bilinear shades faceted, and none reads normals or shades faceted without them. Faces aren't refined yet."
+    )
+    bool doubleSided = true
+}
+
+class GeomSubset : Typed, MaterialBindingAPI (
+    doc = "A set of faces of its parent mesh, which a material binding or semantic labels apply to. Subsets in the materialBind family bind materials to their faces, and subsets with semantic labels label their faces."
+) {
+    token elementType = face (
+        allowed = [face, point, edge, segment, tetrahedron]
+        group = "Subset"
+        displayName = "Element Type"
+        doc = "What indices name. Only face subsets are drawn differently from their mesh."
+    )
+    int[] indices (
+        group = "Subset"
+        displayName = "Indices"
+        doc = "The faces in the subset, as indices into the mesh's faceVertexCounts."
+    )
+    token familyName (
+        group = "Subset"
+        displayName = "Family Name"
+        doc = "The family the subset belongs to, such as materialBind for subsets that bind materials."
+    )
+}
+
+class Points : PointBased (
+    doc = "Particles, each drawn at its point as wide as its width, as a sphere, or as a disk facing its normal when normals are authored."
+) {
+    float[] widths (
+        unit = meters
+        group = "Geometry"
+        displayName = "Widths"
+        doc = "The diameter of each point, or a single diameter for every point. Empty draws each point 1 wide, as Storm does, since USD leaves the fallback to the renderer."
+    )
+    int64[] ids (
+        group = "Geometry"
+        displayName = "Ids"
+        doc = "A stable id per point, which the instance id output reports. Empty makes each point's index its id."
+    )
+}
+
+abstract class Curves : PointBased (
+    doc = "Curves through the points, each drawn as a tube as wide as its widths."
+) {
+    int[] curveVertexCounts (
+        group = "Geometry"
+        displayName = "Curve Vertex Counts"
+        doc = "The number of points in each curve, which take the points in order."
+    )
+    float[] widths (
+        unit = meters
+        group = "Geometry"
+        displayName = "Widths"
+        doc = "The diameter of the curves, indexed as widthsInterpolation says. Empty draws curves 1 wide, as Points do."
+    )
+    token widthsInterpolation = vertex (
+        allowed = [
+            constant
+            uniform
+            varying
+            vertex
+            faceVarying
+        ]
+        enum = Interpolation
+        group = "Geometry"
+        displayName = "Widths Interpolation"
+        doc = "How widths map onto the curves, as one width, one per curve, or one per point. USD's interpolation metadata on widths."
+    )
+}
+
+class BasisCurves : Curves (
+    doc = "Curves drawn as round tubes of radius width / 2, or as ribbons facing their normals when normals are authored."
+) {
+    token type = cubic (
+        allowed = [linear, cubic]
+        enum = CurveType
+        group = "Geometry"
+        displayName = "Type"
+        doc = "Whether each curve runs straight between its points or is a cubic spline in basis, drawn in straight steps that stay within curve tolerance of it."
+    )
+    token basis = bezier (
+        allowed = [bezier, bspline, catmullRom]
+        enum = CurveBasis
+        group = "Geometry"
+        displayName = "Basis"
+        doc = "The cubic basis. Linear curves ignore it."
+    )
+    token wrap = nonperiodic (
+        allowed = [nonperiodic, periodic, pinned]
+        enum = CurveWrap
+        group = "Geometry"
+        displayName = "Wrap"
+        doc = "Whether each curve is open, closes back to its first point, or is pinned to its end points. Linear curves treat pinned as nonperiodic."
+    )
+}
+
+class HermiteCurves : Curves (
+    doc = "Cubic Hermite curves, each running between consecutive points along the tangents given at them, drawn as round tubes of radius width / 2."
+) {
+    vector3f[] tangents (
+        group = "Geometry"
+        displayName = "Tangents"
+        doc = "The tangent at each point, the curve's derivative there over the span to the next point."
+    )
+}
+
+class NurbsCurves : Curves (
+    doc = "Non-uniform rational B-spline curves of order 2 to 4, drawn as round tubes of radius width / 2. Knots, ranges and weights are single precision here, where USD keeps them double."
+) {
+    int[] order (
+        group = "Geometry"
+        displayName = "Order"
+        doc = "The order of each curve, its degree plus one. Curves outside 2 to 4 draw nothing."
+    )
+    float[] knots (
+        group = "Geometry"
+        displayName = "Knots"
+        doc = "Each curve's knot vector in turn, its point count plus its order long."
+    )
+    float2[] ranges (
+        group = "Geometry"
+        displayName = "Ranges"
+        doc = "The parameter range of each curve. It isn't used yet, so curves draw their full knot range."
+    )
+    float[] pointWeights (
+        group = "Geometry"
+        displayName = "Point Weights"
+        doc = "A rational weight per point. Empty weighs every point 1."
+    )
+}
+
+class PointInstancer : Boundable (
+    doc = "Copies of prototype prims, one per entry of positions, each placed by its position, orientation and scale."
+) {
+    prim[] prototypes (
+        group = "Instancing"
+        displayName = "Prototypes"
+        doc = "The prototype roots instances choose from by protoIndices. Prims at or under a prototype root are drawn only through instancers."
+    )
+    int[] protoIndices (
+        group = "Instancing"
+        displayName = "Prototype Indices"
+        doc = "The prototype of each instance, as an index into prototypes. Instances with an index outside prototypes are not drawn."
+    )
+    point3f[] positions (
+        unit = meters
+        group = "Instancing"
+        displayName = "Positions"
+        doc = "The position of each instance in the instancer's space. Its length is the number of instances."
+    )
+    quath[] orientations (
+        group = "Instancing"
+        displayName = "Orientations"
+        doc = "The rotation of each instance as an xyzw quaternion, stored in single precision. Empty leaves instances unrotated."
+    )
+    float3[] scales (
+        group = "Instancing"
+        displayName = "Scales"
+        doc = "The scale of each instance along its prototype's axes. Empty leaves instances unscaled."
+    )
+    vector3f[] velocities (
+        unit = meters
+        group = "Motion"
+        displayName = "Velocities"
+        doc = "The velocity of each instance in meters per second, for motion blur. Rendering doesn't use it yet."
+    )
+    vector3f[] accelerations (
+        group = "Motion"
+        displayName = "Accelerations"
+        doc = "The acceleration of each instance in meters per second squared, for motion blur. Rendering doesn't use it yet."
+    )
+    vector3f[] angularVelocities (
+        group = "Motion"
+        displayName = "Angular Velocities"
+        doc = "The angular velocity of each instance in degrees per second, for motion blur. Rendering doesn't use it yet."
+    )
+    int64[] ids (
+        group = "Instancing"
+        displayName = "Ids"
+        doc = "A stable id per instance, which invisibleIds and outputs use. Empty makes each instance's index its id."
+    )
+    int64[] invisibleIds (
+        group = "Instancing"
+        displayName = "Invisible Ids"
+        doc = "Ids of instances that are not drawn."
+    )
+    primvars primvars (
+        group = "Primvars"
+        displayName = "Primvars"
+        doc = "Primvars for the copies, packed as on gprims. A constant primvar applies to every copy, and any other interpolation holds one value per instance. Copies read them before their prototype's own, so displayColor here tints each instance."
+    )
+}

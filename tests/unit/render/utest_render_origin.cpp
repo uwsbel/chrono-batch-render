@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "chrono_batch_render/render/render_output.h"
+#include "chrono_batch_render/render/renderer.h"
+#include "chrono_batch_render/scene/rotation.h"
+#include "chrono_batch_render/scene/scene.h"
+#include "support/devices.h"
+
+namespace chrono::batch_render {
+namespace {
+
+using device::Device;
+using test::ForEachDevice;
+
+constexpr uint32_t kWidth = 15;
+constexpr uint32_t kHeight = 11;
+constexpr double kAu = 1.495978707e11;
+const std::vector<std::string> kProducts = {"/Render/View"};
+
+void DefineProduct(Scene& scene, const std::vector<std::string>& cameras, RenderMode mode) {
+    scene.Define<Scope>("/Render");
+    scene.Define<RenderVar>("/Render/Color", {.sourceName = "HdrColor"});
+    scene.Define<RenderVar>("/Render/Depth", {.sourceName = "DistanceToCamera"});
+    scene.Define<RenderProduct>("/Render/View",
+                                {.camera = cameras,
+                                 .resolution = {kWidth, kHeight},
+                                 .orderedVars = {"/Render/Color", "/Render/Depth"}});
+    scene.Select("/Render/View").Get<RenderMode>("renderMode").Set(mode);
+}
+
+void DefineCamera(Scene& scene, const std::string& path, Double3 eye, Double3 target) {
+    scene.Define<Camera>(path, {.translate = eye, .orient = LookAt(eye, target, {0, 0, 1})});
+}
+
+struct Frames {
+    std::vector<float> color;
+    std::vector<float> depth;
+
+    float Depth(uint32_t camera) const {
+        return depth[(camera * kHeight + kHeight / 2) * kWidth + kWidth / 2];
+    }
+
+    float Red(uint32_t camera) const {
+        return color[((camera * kHeight + kHeight / 2) * kWidth + kWidth / 2) * 4];
+    }
+};
+
+Frames Render(Renderer& renderer) {
+    RenderOutput output = renderer.Step(kProducts);
+    output.Wait();
+    const FrameOutput& frame = output["/Render/View"].frames.at(0);
+    return {frame.Source("HdrColor").tensor.ToHost<float>(),
+            frame.Source("DistanceToCamera").tensor.ToHost<float>()};
+}
+
+TEST(RenderOriginTest, EachWorldRendersPreciselyNearItsFarAwayCamera) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        scene->Define<World>("/env_0");
+        scene->Define<World>("/env_1");
+        DefineCamera(*scene, "/env_0/Cam", {kAu, 0, 0}, {kAu, 1, 0});
+        scene->Define<Sphere>("/env_0/Pebble", {.translate = {kAu, 2, 0}, .radius = 0.01f});
+        DefineCamera(*scene, "/env_1/Cam", {-0.5 * kAu, 3e8, 0}, {-0.5 * kAu, 3e8 + 1, 0});
+        scene->Define<Sphere>("/env_1/Pebble",
+                              {.translate = {-0.5 * kAu, 3e8 + 1.5, 0}, .radius = 0.1f});
+        DefineProduct(*scene, {"/env_0/Cam", "/env_1/Cam"}, RenderMode::Minimal);
+        Renderer renderer(scene);
+        const Frames frames = Render(renderer);
+        EXPECT_NEAR(frames.Depth(0), 1.99, 1e-4);
+        EXPECT_NEAR(frames.Depth(1), 1.4, 1e-4);
+    });
+}
+
+TEST(RenderOriginTest, FollowsTheCameraAsItMovesAndSwitches) {
+    ForEachDevice([](Device& device) {
+        const Ref<Scene> scene = Scene::Create(device);
+        DefineCamera(*scene, "/Cam", {kAu, 0, 0}, {kAu, 1, 0});
+        DefineCamera(*scene, "/Other", {-kAu, 0, 5e9}, {-kAu, 1, 5e9});
+        scene->Define<Sphere>("/Near", {.translate = {kAu, 2, 0}, .radius = 0.5});
+        scene->Define<Sphere>("/Ahead", {.translate = {kAu + 5000, 3, 0}, .radius = 0.5});
+        scene->Define<Sphere>("/Away", {.translate = {-kAu, 1.3, 5e9}, .radius = 0.05f});
+        DefineProduct(*scene, {"/Cam"}, RenderMode::Minimal);
+        Renderer renderer(scene);
+        EXPECT_NEAR(Render(renderer).Depth(0), 1.5, 1e-4);
+
+        scene->Select("/Cam").Get<Double3>("translate").Set(Double3{kAu + 5000, 0, 0});
+        EXPECT_NEAR(Render(renderer).Depth(0), 2.5, 1e-4);
+
+        scene->Select("/Render/View").Get("camera").SetTargets(0, {"/Other"});
+        EXPECT_NEAR(Render(renderer).Depth(0), 1.25, 1e-4);
+    });
+}
+
+Frames RenderLitGround(Device& device, double x) {
+    const Ref<Scene> scene = Scene::Create(device);
+    DefineCamera(*scene, "/Cam", {x, -3, 1}, {x, 0, 0});
+    scene->Define<Mesh>("/Ground", {.translate = {x, 0, 0},
+                                    .points = {{-5, -5, 0}, {5, -5, 0}, {5, 5, 0}, {-5, 5, 0}},
+                                    .faceVertexIndices = {0, 1, 2, 3},
+                                    .faceVertexCounts = {4}});
+    scene->Define<SphereLight>("/Lamp",
+                               {.translate = {x + 1, 0, 1}, .intensity = 100, .radius = 0.1f});
+    DefineProduct(*scene, {"/Cam"}, RenderMode::RealTime);
+    Renderer renderer(scene);
+    return Render(renderer);
+}
+
+TEST(RenderOriginTest, LightsSitWhereTheSurfacesDoFarFromTheOrigin) {
+    ForEachDevice([](Device& device) {
+        const Frames near = RenderLitGround(device, 0);
+        const Frames far = RenderLitGround(device, kAu);
+        EXPECT_GT(near.Red(0), 0);
+        EXPECT_NEAR(far.Red(0), near.Red(0), 1e-3 * near.Red(0));
+        EXPECT_NEAR(far.Depth(0), near.Depth(0), 1e-4);
+    });
+}
+
+struct Shown {
+    Ref<Scene> scene;
+    ComposedWorld composed;
+};
+
+Shown ShownSite(Device& device, double x, bool composed) {
+    Shown shown{Scene::Create(device), {}};
+    Scene& scene = *shown.scene;
+    const Prim viewer = scene.Define<World>("/Viewer");
+    scene.MarkSession(viewer);
+    DefineCamera(scene, "/Viewer/Cam", {x + 10, -5, 0}, {x + 10, 0, 0});
+    const std::string site = composed ? "/Site" : "/Viewer";
+    const double shift = composed ? 0 : 10;
+    scene.Define<World>("/Site");
+    scene.Define<Sphere>(site + "/Ball", {.translate = {x + shift, 0, 0}, .radius = 1});
+    scene.Define<SphereLight>(
+        site + "/Lamp", {.translate = {x + shift + 1, -2, 1}, .intensity = 100, .radius = 0.1f});
+    if (composed) {
+        shown.composed = scene.ComposeWorld(
+            viewer, {.worlds = {scene.Find("/Site")->World()}, .offsets = {{10, 0, 0}}});
+    }
+    DefineProduct(scene, {"/Viewer/Cam"}, RenderMode::RealTime);
+    return shown;
+}
+
+TEST(RenderOriginTest, ShownWorldsAndTheirLightsLandAtTheirOffsetFarFromTheOrigin) {
+    ForEachDevice([](Device& device) {
+        Shown direct = ShownSite(device, 0, false);
+        Renderer directRenderer(direct.scene);
+        const Frames reference = Render(directRenderer);
+        EXPECT_NEAR(reference.Depth(0), 4, 1e-4);
+        EXPECT_GT(reference.Red(0), 0);
+
+        Shown far = ShownSite(device, kAu, true);
+        Renderer renderer(far.scene);
+        const Frames composed = Render(renderer);
+        EXPECT_NEAR(composed.Depth(0), 4, 1e-4);
+        EXPECT_NEAR(composed.Red(0), reference.Red(0), 1e-3 * reference.Red(0));
+
+        far.scene->Select("/Site/Ball").Get<Double3>("translate").Set(Double3{kAu, 1, 0});
+        EXPECT_NEAR(Render(renderer).Depth(0), 5, 1e-4);
+    });
+}
+
+}
+}

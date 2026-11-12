@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: BSD-3-Clause
+@PACKAGE_INIT@
+
+if(NOT TARGET chrono_batch_render::dlpack)
+    set(chrono_batch_render_dlpack "${CHRONO_BATCH_RENDER_DLPACK_TARGET}")
+    if(NOT chrono_batch_render_dlpack AND NOT TARGET dlpack::dlpack)
+        find_package(dlpack CONFIG QUIET)
+    endif()
+    if(NOT chrono_batch_render_dlpack AND TARGET dlpack::dlpack)
+        set(chrono_batch_render_dlpack dlpack::dlpack)
+    endif()
+    if(NOT chrono_batch_render_dlpack AND NOT @chrono_batch_render_dlpack_bundled@)
+        set(chrono_batch_render_FOUND FALSE)
+        set(chrono_batch_render_NOT_FOUND_MESSAGE
+            "Chrono Batch Render was built against an outside DLPack; find dlpack 1.0 or later first, or set "
+            "CHRONO_BATCH_RENDER_DLPACK_TARGET to a target of it"
+        )
+        return()
+    endif()
+    add_library(chrono_batch_render::dlpack INTERFACE IMPORTED)
+    if(chrono_batch_render_dlpack)
+        target_link_libraries(chrono_batch_render::dlpack INTERFACE "${chrono_batch_render_dlpack}")
+    else()
+        target_include_directories(
+            chrono_batch_render::dlpack
+            INTERFACE
+                "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@/chrono_batch_render/third_party/dlpack"
+        )
+    endif()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/chrono_batch_renderTargets.cmake")
+
+set(chrono_batch_render_viewer_FOUND FALSE)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/chrono_batch_renderViewerTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/chrono_batch_renderViewerTargets.cmake")
+    set(chrono_batch_render_viewer_FOUND TRUE)
+endif()
+
+set(chrono_batch_render_xr_FOUND FALSE)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/chrono_batch_renderXrTargets.cmake")
+    include("${CMAKE_CURRENT_LIST_DIR}/chrono_batch_renderXrTargets.cmake")
+    set(chrono_batch_render_xr_FOUND TRUE)
+endif()
+
+foreach(
+    target
+    IN
+    ITEMS
+        chrono_batch_render::chrono_batch_render
+        chrono_batch_render::viewer
+        chrono_batch_render::xr
+)
+    if(NOT TARGET ${target})
+        continue()
+    endif()
+    foreach(config IN ITEMS RELWITHDEBINFO MINSIZEREL)
+        get_target_property(mapped ${target} MAP_IMPORTED_CONFIG_${config})
+        if(NOT mapped)
+            set_target_properties(
+                ${target}
+                PROPERTIES
+                    MAP_IMPORTED_CONFIG_${config}
+                        RELEASE
+            )
+        endif()
+    endforeach()
+endforeach()
+
+if(vulkan IN_LIST chrono_batch_render_FIND_COMPONENTS)
+    find_package(VulkanHeaders CONFIG QUIET)
+    if(NOT TARGET Vulkan::Headers)
+        find_package(Vulkan QUIET)
+    endif()
+    if(TARGET Vulkan::Headers)
+        if(NOT TARGET chrono_batch_render::vulkan)
+            add_library(chrono_batch_render::vulkan INTERFACE IMPORTED)
+            target_link_libraries(
+                chrono_batch_render::vulkan
+                INTERFACE
+                    chrono_batch_render::chrono_batch_render
+                    Vulkan::Headers
+            )
+        endif()
+        set(chrono_batch_render_vulkan_FOUND TRUE)
+    else()
+        set(chrono_batch_render_vulkan_FOUND FALSE)
+    endif()
+endif()
+
+check_required_components(chrono_batch_render)

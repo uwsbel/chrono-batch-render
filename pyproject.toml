@@ -1,0 +1,83 @@
+[build-system]
+requires = ["scikit-build-core>=1.1", "nanobind>=3.1"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "chrono-batch-render"
+dynamic = ["version"]
+description = "A physically-based, real-time, spectral renderer for planetary robotics and sensing"
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Simulation-Based Engineering Laboratory" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/uwsbel/chrono-batch-render"
+Documentation = "https://uwsbel.github.io/chrono-batch-render/"
+Repository = "https://github.com/uwsbel/chrono-batch-render"
+Issues = "https://github.com/uwsbel/chrono-batch-render/issues"
+
+[project.scripts]
+chrono-batch-render = "chrono_batch_render.__main__:main"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.24"
+cmake.build-type = "Release"
+build-dir = "build-wheel/chrono_batch_render"
+wheel.py-api = "cp312"
+wheel.packages = []
+build.targets = ["_core", "_viewer", "_xr", "chrono_batch_render_viewer_xr", "chrono_batch_render_python_stubs_core", "chrono_batch_render_python_stubs_viewer", "chrono_batch_render_python_stubs_xr"]
+install.components = ["python"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = '''(?s)project\(\s*chrono_batch_render\s+VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+).*?set\(CHRONO_BATCH_RENDER_PRERELEASE\s+"(?P<prerelease>(?:(?:a|b|rc)[0-9]+)?)"\)'''
+result = "{value}{prerelease}"
+
+[tool.scikit-build.cmake.define]
+CHRONO_BATCH_RENDER_BUILD_PYTHON = "ON"
+CHRONO_BATCH_RENDER_BUILD_VIEWER = "ON"
+CHRONO_BATCH_RENDER_BUILD_XR = "ON"
+CHRONO_BATCH_RENDER_BUILD_TESTS = "OFF"
+CHRONO_BATCH_RENDER_INSTALL = "ON"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+ignore = ["B905"]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/render_bench/worker.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-*"
+skip = "*-musllinux_*"
+manylinux-x86_64-image = "manylinux_2_34"
+manylinux-aarch64-image = "manylinux_2_34"
+test-command = "python -c \"import chrono_batch_render, chrono_batch_render.viewer, chrono_batch_render.xr; print(chrono_batch_render.__version__)\""
+
+[tool.cibuildwheel.linux]
+before-all = "dnf install -y libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel wayland-devel libxkbcommon-devel"
+repair-wheel-command = "auditwheel repair --exclude 'libslang-*' -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "26.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["native"]
+before-build = "pip install delvewheel"
+repair-wheel-command = "delvewheel repair --no-dll \"chrono_batch_render.dll;chrono_batch_render_viewer.dll;chrono_batch_render_viewer_xr.dll;chrono_batch_render_xr.dll;slang-compiler.dll;slang-glslang.dll;msvcp140.dll\" -w {dest_dir} {wheel}"

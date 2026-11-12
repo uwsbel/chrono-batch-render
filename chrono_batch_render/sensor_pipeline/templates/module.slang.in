@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+import chrono_batch_render.sensor_pipeline;
+{{imports}}
+using namespace chrono::batch_render;

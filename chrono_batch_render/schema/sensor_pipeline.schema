@@ -1,0 +1,461 @@
+class SensorPipeline : NodeGraph (
+    doc = "A sensor processing graph that turns what a sensor's trace measured into its outputs, such as raw digital numbers, a processed image or a point cloud. Its outputs connect to its nodes' outputs and name what render variables can read. Sensors and render products bind it with pipeline:binding."
+) {}
+
+abstract class SensorNode : Shader (
+    doc = "One step of a sensor pipeline, named by info:id. Token and bool inputs pick how the step is built, so changing one compiles the pipeline again, while numeric inputs are values that change without compiling."
+) {}
+
+class CameraSignal : SensorNode (
+    doc = "The photoelectron rate a camera's trace measured, as its detector's channels see it. It's how a pipeline asks the trace for its signal."
+) {
+    token info:id = CameraSignal
+    token inputs:layout = full (
+        enum = CameraSignalLayout
+        allowed = [full, mosaic]
+        group = "Signal"
+        displayName = "Layout"
+        doc = "full gives every pixel all of the pattern's channels. mosaic gives each pixel only the channel at its site, as a Bayer or other mosaic sensor reads it, which is the raw signal and takes a third of the memory. Patterns without a mosaic always give full."
+    )
+    token inputs:precision = float (
+        enum = CameraSignalPrecision
+        allowed = [float, half]
+        group = "Signal"
+        displayName = "Precision"
+        doc = "Whether the rate is stored as 32-bit or 16-bit floats."
+    )
+}
+
+class Integrate : SensorNode (
+    doc = "Integrates the photoelectron rate over the exposure into mean photoelectrons."
+) {
+    token info:id = Integrate
+    float inputs:time = 0 (
+        unit = seconds
+        group = "Exposure"
+        displayName = "Time"
+        min = 0
+        doc = "The integration time. 0 takes the camera's exposure:time."
+    )
+}
+
+class Emva1288 : SensorNode (
+    doc = "Adds a camera's noise as EMVA 1288 models it, from the camera's detector values. Dark current at the detector's temperature and photo response non-uniformity add to the mean, shot noise draws the collected charge, the full well clips it unless clipping is none, and read noise and dark signal non-uniformity add to it."
+) {
+    token info:id = Emva1288
+    token inputs:shot = poisson (
+        enum = ShotNoise
+        allowed = [poisson, gaussian, off]
+        group = "Noise"
+        displayName = "Shot Noise"
+        doc = "poisson draws exact counts at low means and a normal approximation above about 20 electrons. gaussian always uses the normal approximation. off leaves the mean."
+    )
+    token inputs:clipping = clip (
+        enum = FullWellClipping
+        allowed = [clip, none]
+        group = "Noise"
+        displayName = "Clipping"
+        doc = "clip limits the collected charge to the full well. none leaves the excess for a Blooming node to spread and clip."
+    )
+    bool inputs:fixedPatterns = true (
+        group = "Noise"
+        displayName = "Fixed Patterns"
+        doc = "Whether photo response and dark signal non-uniformity apply. They stay fixed for a camera across frames and runs."
+    )
+    float inputs:time = 0 (
+        unit = seconds
+        group = "Noise"
+        displayName = "Time"
+        min = 0
+        doc = "The time dark current builds over. 0 takes the camera's exposure:time."
+    )
+}
+
+class Adc : SensorNode (
+    doc = "Converts charge to digital numbers with the detector's system gain scaled by exposure:iso, its black level and its bit depth."
+) {
+    token info:id = Adc
+}
+
+class Gain : SensorNode (
+    doc = "Scales digital numbers, as a digital gain does."
+) {
+    token info:id = Gain
+    float inputs:gain = 1 (
+        group = "Gain"
+        displayName = "Gain"
+        min = 0
+        doc = "The factor applied."
+    )
+}
+
+class ToColor : SensorNode (
+    doc = "Maps digital numbers to scene-linear color between the black level and the largest value the bit depth holds. Red, green and blue channels become color, and a single channel becomes gray."
+) {
+    token info:id = ToColor
+}
+
+class Encode : SensorNode (
+    doc = "Encodes scene-linear color for display, clamped to the displayable range."
+) {
+    token info:id = Encode
+    token inputs:transfer = srgb (
+        enum = EncodeTransfer
+        allowed = [srgb, rec709]
+        group = "Encode"
+        displayName = "Transfer"
+        doc = "srgb applies the sRGB curve, and rec709 the Rec. 709 camera curve."
+    )
+}
+
+class Demosaic : SensorNode (
+    doc = "Fills in every channel at every pixel of a mosaic from the samples around it. Signals that aren't mosaics pass through."
+) {
+    token info:id = Demosaic
+    token inputs:method = bilinear (
+        enum = DemosaicMethod
+        allowed = [bilinear, malvar]
+        group = "Demosaic"
+        displayName = "Method"
+        doc = "bilinear averages the nearest samples of each channel within one pixel, which is bilinear interpolation on a Bayer mosaic. malvar adds the gradient-corrected 5 x 5 filters of Malvar, He and Cutler on Bayer mosaics, which keep edges sharper, and falls back to bilinear on other patterns."
+    )
+}
+
+class GaussianPsf : SensorNode (
+    doc = "Blurs the photoelectron rate by a Gaussian point spread function out to 3 pixels, as defocus or a lens's spread does. On a mosaic it averages only samples of the same channel."
+) {
+    token info:id = GaussianPsf
+    float inputs:sigma = 0.7 (
+        group = "Optics"
+        displayName = "Sigma"
+        min = 0
+        doc = "The spread's standard deviation in pixels."
+    )
+}
+
+class Denoise : SensorNode (
+    doc = "Smooths color with a bilateral filter out to 2 pixels, which keeps edges whose difference is much larger than sigmaRange."
+) {
+    token info:id = Denoise
+    float inputs:sigmaSpace = 1 (
+        group = "Denoise"
+        displayName = "Sigma Space"
+        min = 0
+        doc = "The filter's spatial standard deviation in pixels."
+    )
+    float inputs:sigmaRange = 0.05 (
+        group = "Denoise"
+        displayName = "Sigma Range"
+        min = 0
+        doc = "How different in color two pixels may be and still average, as a standard deviation."
+    )
+}
+
+class Vignette : SensorNode (
+    doc = "Darkens the photoelectron rate toward the corners by 1 - strength r^2, where r is the distance from the image's center over half its diagonal, as a lens barrel's mechanical vignetting does. The natural cos^4 falloff is already in the rate."
+) {
+    token info:id = Vignette
+    float inputs:strength = 0.3 (
+        group = "Optics"
+        displayName = "Strength"
+        min = 0
+        max = 1
+        doc = "How much darker the corners are, from 0 for none to 1 for black."
+    )
+}
+
+class BlackLevel : SensorNode (
+    doc = "Subtracts the detector's black level from digital numbers."
+) {
+    token info:id = BlackLevel
+}
+
+class WhiteBalance : SensorNode (
+    doc = "Scales red, green and blue by fixed gains. With a Meter's stat connected, it also scales red and blue so the metered mean comes out gray, as gray-world auto white balance does."
+) {
+    token info:id = WhiteBalance
+    float3 inputs:gains = (1, 1, 1) (
+        group = "White Balance"
+        displayName = "Gains"
+        doc = "The red, green and blue gains."
+    )
+}
+
+class Meter : SensorNode (
+    doc = "Measures each capture's mean color and luminance over a weighted area, for auto white balance and auto exposure to read. Its stat holds the per-channel means, then the mean luminance, with the total weight last."
+) {
+    token info:id = Meter
+    token inputs:mode = average (
+        enum = MeterMode
+        allowed = [average, centerWeighted, spot]
+        group = "Meter"
+        displayName = "Mode"
+        doc = "average weighs every pixel equally. centerWeighted weighs pixels by a Gaussian of their distance from the center over half the diagonal, with radius as its standard deviation. spot reads only pixels within radius of the center."
+    )
+    float inputs:radius = 0.3 (
+        group = "Meter"
+        displayName = "Radius"
+        min = 0
+        doc = "The center-weighted spread or the spot's size, as a fraction of half the image's diagonal."
+    )
+}
+
+class AutoExposure : SensorNode (
+    doc = "Scales color by a gain that follows a Meter's mean luminance toward a target from one capture to the next, as a camera's auto exposure does. A capture uses the gain the captures before it settled on, so it reacts one capture late, as real cameras do. Each sensor keeps its own gain, which starts at 1."
+) {
+    token info:id = AutoExposure
+    float inputs:target = 0.18 (
+        group = "Exposure"
+        displayName = "Target"
+        min = 0
+        doc = "The mean luminance the gain aims for."
+    )
+    float inputs:speed = 0.5 (
+        group = "Exposure"
+        displayName = "Speed"
+        min = 0
+        max = 1
+        doc = "How far the gain moves toward its ideal each capture, in stops, from 0 for never to 1 for at once."
+    )
+    float inputs:minGain = 0.015625 (
+        group = "Exposure"
+        displayName = "Min Gain"
+        min = 0
+        doc = "The smallest gain allowed."
+    )
+    float inputs:maxGain = 64 (
+        group = "Exposure"
+        displayName = "Max Gain"
+        min = 0
+        doc = "The largest gain allowed."
+    )
+}
+
+class Ccm : SensorNode (
+    doc = "Applies a color correction matrix, taking the camera's red, green and blue to the working space's."
+) {
+    token info:id = Ccm
+    float3 inputs:red = (1, 0, 0) (
+        group = "Matrix"
+        displayName = "Red"
+        doc = "The weights of the camera's red, green and blue in the output's red."
+    )
+    float3 inputs:green = (0, 1, 0) (
+        group = "Matrix"
+        displayName = "Green"
+        doc = "The weights of the camera's red, green and blue in the output's green."
+    )
+    float3 inputs:blue = (0, 0, 1) (
+        group = "Matrix"
+        displayName = "Blue"
+        doc = "The weights of the camera's red, green and blue in the output's blue."
+    )
+}
+
+class Tone : SensorNode (
+    doc = "Compresses scene-linear color into the displayable range."
+) {
+    token info:id = Tone
+    token inputs:curve = none (
+        enum = ToneCurve
+        allowed = [none, reinhard, aces, agx]
+        group = "Tone"
+        displayName = "Curve"
+        doc = "none leaves color as it is, reinhard maps x to x / (1 + x), aces applies Narkowicz's fit of the ACES filmic curve, and agx applies Sobotka's AgX base look, which desaturates bright colors toward white rather than clipping them."
+    )
+}
+
+class LidarReturns : SensorNode (
+    doc = "The returns a lidar's trace found, one per beam and return slot with its range, intensity and position, and whether it returned. It's how a lidar pipeline asks the trace for its returns, in the frame of the point cloud that reads the pipeline."
+) {
+    token info:id = LidarReturns
+}
+
+class RangeNoise : SensorNode (
+    doc = "Adds Gaussian noise to each return's range and moves its point along the beam to match."
+) {
+    token info:id = RangeNoise
+    float inputs:sigma = 0.02 (
+        unit = meters
+        group = "Noise"
+        displayName = "Sigma"
+        min = 0
+        doc = "The range noise's standard deviation at any range."
+    )
+    float inputs:sigmaPerMeter = 0 (
+        group = "Noise"
+        displayName = "Sigma per Meter"
+        min = 0
+        doc = "Extra standard deviation per meter of range, so far returns are noisier."
+    )
+}
+
+class IntensityNoise : SensorNode (
+    doc = "Adds Gaussian noise to each return's intensity, never below zero."
+) {
+    token info:id = IntensityNoise
+    float inputs:sigma = 0 (
+        group = "Noise"
+        displayName = "Sigma"
+        min = 0
+        doc = "The intensity noise's standard deviation at any intensity."
+    )
+    float inputs:relative = 0.05 (
+        group = "Noise"
+        displayName = "Relative"
+        min = 0
+        doc = "Extra standard deviation as a fraction of the intensity."
+    )
+}
+
+class Dropout : SensorNode (
+    doc = "Drops returns too weak to detect, and others at random."
+) {
+    token info:id = Dropout
+    float inputs:threshold = 0 (
+        group = "Detection"
+        displayName = "Threshold"
+        min = 0
+        doc = "Returns with less intensity than this aren't detected."
+    )
+    float inputs:rate = 0 (
+        group = "Detection"
+        displayName = "Rate"
+        min = 0
+        max = 1
+        doc = "The fraction of the remaining returns dropped at random."
+    )
+}
+
+class RangeQuantize : SensorNode (
+    doc = "Snaps each return's range to the sensor's range resolution and moves its point along the beam to match."
+) {
+    token info:id = RangeQuantize
+    float inputs:step = 0.01 (
+        unit = meters
+        group = "Resolution"
+        displayName = "Step"
+        min = 0
+        doc = "The range resolution. 0 leaves ranges as they are."
+    )
+}
+
+class ToPointCloud : SensorNode (
+    doc = "Packs the returns that returned into a point cloud. A PointCloud render variable that reads the pipeline output it feeds picks the channels and frame as it does for the trace's own cloud."
+) {
+    token info:id = ToPointCloud
+}
+
+class RadarReturns : SensorNode (
+    doc = "The returns a radar's trace found, one per ray with its range, radial velocity, intensity and position, and whether it hit. It's how a radar pipeline asks the trace for its returns, in the frame of the point cloud that reads the pipeline."
+) {
+    token info:id = RadarReturns
+}
+
+class RadarNoise : SensorNode (
+    doc = "Adds Gaussian noise to each return's range and radial velocity, and a thermal noise floor to its intensity as complex Gaussian noise on its amplitude."
+) {
+    token info:id = RadarNoise
+    float inputs:rangeSigma = 0.05 (
+        unit = meters
+        group = "Noise"
+        displayName = "Range Sigma"
+        min = 0
+        doc = "The range noise's standard deviation."
+    )
+    float inputs:velocitySigma = 0.1 (
+        group = "Noise"
+        displayName = "Velocity Sigma"
+        min = 0
+        doc = "The radial velocity noise's standard deviation in meters per second."
+    )
+    float inputs:floor = 0 (
+        group = "Noise"
+        displayName = "Noise Floor"
+        min = 0
+        doc = "The mean noise power added to each return's intensity. 0 adds none."
+    )
+}
+
+class Cfar : SensorNode (
+    doc = "Cell-averaging CFAR over the ray grid. It keeps a return only when its intensity beats the mean of its training cells, past its guard cells, by the factor that gives falseAlarmRate on exponentially distributed noise."
+) {
+    token info:id = Cfar
+    int inputs:guard = 1 (
+        group = "Detection"
+        displayName = "Guard Cells"
+        min = 0
+        max = 4
+        doc = "How many cells on each side of the cell under test are left out of the average."
+    )
+    int inputs:training = 2 (
+        group = "Detection"
+        displayName = "Training Cells"
+        min = 1
+        max = 4
+        doc = "How many cells past the guard cells on each side are averaged, up to 4 cells from the cell under test in all."
+    )
+    float inputs:falseAlarmRate = 0.001 (
+        group = "Detection"
+        displayName = "False Alarm Rate"
+        min = 0
+        max = 1
+        doc = "The fraction of noise-only cells detected."
+    )
+}
+
+class Glare : SensorNode (
+    doc = "Scatters a fraction of the photoelectron rate into a wide Gaussian veil, as stray light in a lens does, keeping the total. It is a global node of three passes, so its spread may reach far past a stencil's."
+) {
+    token info:id = Glare
+    float inputs:sigma = 8 (
+        group = "Optics"
+        displayName = "Sigma"
+        min = 0
+        doc = "The veil's standard deviation in pixels. It reaches three sigmas, up to 64 pixels."
+    )
+    float inputs:strength = 0.04 (
+        group = "Optics"
+        displayName = "Strength"
+        min = 0
+        max = 1
+        doc = "The fraction of the rate scattered into the veil."
+    )
+}
+
+class DiffractionPsf : SensorNode (
+    doc = "Blurs the photoelectron rate by the Airy pattern of a circular aperture, sampled at pixel centers out to 8 pixels. On a mosaic it uses only samples of the same channel."
+) {
+    token info:id = DiffractionPsf
+    float inputs:fNumber = 2.8 (
+        group = "Optics"
+        displayName = "F-Number"
+        min = 0.5
+        doc = "The lens's f-number."
+    )
+    float inputs:wavelength = 550 (
+        group = "Optics"
+        displayName = "Wavelength"
+        min = 1
+        doc = "The wavelength in nanometers the pattern is computed at."
+    )
+    float inputs:pixelPitch = 3 (
+        group = "Optics"
+        displayName = "Pixel Pitch"
+        min = 0.01
+        doc = "The distance between pixel centers in micrometers."
+    )
+}
+
+class Blooming : SensorNode (
+    doc = "Spreads charge above the detector's full well up and down its column into neighbors with room, then clips every pixel to the full well, as a CCD's saturated pixels bleed. Put it after an Emva1288 whose clipping is none. It is a global node, so the spread may reach far."
+) {
+    token info:id = Blooming
+    int inputs:reach = 32 (
+        group = "Detector"
+        displayName = "Reach"
+        min = 1
+        max = 512
+        doc = "The farthest a saturated pixel's excess travels along its column, in pixels."
+    )
+}

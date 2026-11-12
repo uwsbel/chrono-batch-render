@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.material.definitions.diffuse;
+__exported import chrono_batch_render.render.kernels.material.definitions.preview;
+{{planetaryImport}}{{imports}}
+using namespace chrono::batch_render;
+
+struct LinkedDefinitions : ILinkedDefinitions {
+    static bool Linked(uint definition) {
+        return definition < kDefinitionHapke{{planetaryLinked}}{{linked}};
+    }
+}
+
+void ShadeDefinition<Spectrum : ISpectrum>(inout ShadeContext context,
+                                           inout OpticalClosure<Spectrum> closure) {
+    ChooseDefinition<LinkedDefinitions>(context);
+    if (IsPreviewDefinition(context.definition)) {
+        StandardDefinition<PreviewMaterial, Spectrum>.Shade(context, closure);
+{{planetaryShade}}{{shadeCases}}    } else {
+        StandardDefinition<DiffuseMaterial, Spectrum>.Shade(context, closure);
+    }
+}
+
+Spectrum AlbedoDefinition<Spectrum : ISpectrum>(inout ShadeContext context) {
+    ChooseDefinition<LinkedDefinitions>(context);
+    if (IsPreviewDefinition(context.definition)) {
+        return StandardDefinition<PreviewMaterial, Spectrum>.Albedo(context);
+{{planetaryAlbedo}}{{albedoCases}}    } else {
+        return StandardDefinition<DiffuseMaterial, Spectrum>.Albedo(context);
+    }
+}

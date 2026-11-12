@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "chrono_batch_render/scene/tables/surfaces.h"
+
+#include <algorithm>
+#include <set>
+
+#include "chrono_batch_render/device/commands.h"
+#include "chrono_batch_render/device/queue.h"
+#include "chrono_batch_render/scene/kernels.h"
+#include "chrono_batch_render/scene/records/render_tables.h"
+#include "chrono_batch_render/scene/schema/columns.h"
+#include "chrono_batch_render/scene/tables/kernels/surfaces.h"
+#include "chrono_batch_render/stage/publish/change_set.h"
+#include "chrono_batch_render/util/profiler.h"
+
+namespace chrono::batch_render {
+
+namespace {
+
+constexpr ColumnRef kInputs[] = {kGprimPrimvars,
+                                 kGprimDisplayColor,
+                                 kGprimDisplayOpacity,
+                                 kPointBasedNormals,
+                                 kPointBasedNormalsInterpolation,
+                                 kMeshSubdivisionScheme,
+                                 kPointInstancerPrimvars,
+                                 kPointInstancerIds};
+
+}
+
+std::span<const ColumnRef> SurfaceTable::Inputs() const {
+    return kInputs;
+}
+
+void SurfaceTable::Describe(RenderTables& tables) const {
+    tables.surfaces.address = m_surfaces.Address();
+}
+
+void SurfaceTable::Run(const ChangeSet& changes, TableVersions&) {
+    CHRONO_BATCH_RENDER_ZONE("Surfaces/Run");
+    m_written = 0;
+    ColumnStore& store = m_structure.GetColumnStore();
+    const std::span<const uint32_t> starts = m_instances.FirstInstances();
+    const std::span<const uint32_t> counts = m_instances.InstanceCounts();
+    if (m_tables.instances.address == 0 || counts.empty()) {
+        return;
+    }
+    device::Device& device = store.GetDevice();
+    const bool grown = m_surfaces.Reserve(device, starts.back());
+    std::set<uint32_t> dirty;
+    for (const uint32_t world :
+         changes.resync || grown ? std::vector<uint32_t>{kGlobalWorld} : changes.worlds) {
+        dirty.merge(m_instances.Tlases(world));
+    }
+    std::vector<uint32_t> tlases(dirty.begin(), dirty.end());
+    uint32_t widest = 0;
+    for (const uint32_t tlas : tlases) {
+        widest = std::max(widest, starts[tlas + 1] - starts[tlas]);
+        m_written += counts[tlas];
+    }
+    if (widest == 0) {
+        return;
+    }
+    const Ref<device::Buffer> list = device.CreateBuffer({.label = "surface TLASes"}, tlases);
+    SurfaceParams params{};
+    params.scene.address = store.DeviceData();
+    params.layout = m_tables.instances;
+    params.meshes = m_tables.meshes;
+    params.surfaces.address = m_surfaces.Address();
+    params.tlases.address = list->Address();
+    params.normalsName = m_structure.GetTokens().Intern("normals").id;
+    params.displayOpacityName = m_structure.GetTokens().Intern("displayOpacity").id;
+    device::Queue& queue = device.GetQueue();
+    static const profiler::ZoneId zone = profiler::ZoneId::Named("Surfaces/Write");
+    device::CommandEncoder encoder = queue.CreateEncoder();
+    {
+        const device::ZoneScope scope(encoder, zone);
+        encoder.Dispatch(
+            Kernels().Entry("WriteSurfaces"), params,
+            {.x = device::GroupCount(widest, kSurfaceGroup), .y = uint32_t(tlases.size())});
+    }
+    queue.Submit(encoder.Finish());
+}
+
+void SurfaceTable::Prepare() {
+    Kernels();
+}
+
+device::Program& SurfaceTable::Kernels() {
+    if (!m_program) {
+        m_program = m_structure.GetColumnStore().GetDevice().CreateProgram(
+            {.modules = {"chrono_batch_render.scene.tables.kernels.surfaces"},
+             .library = &kSceneKernels,
+             .entries = {"WriteSurfaces"},
+             .label = "surfaces"});
+    }
+    return *m_program;
+}
+
+}

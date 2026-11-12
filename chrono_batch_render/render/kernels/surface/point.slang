@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.surface.element;
+import chrono_batch_render.device.kernels.device;
+
+using namespace chrono::batch_render;
+
+struct SurfacePoint : IDifferentiable {
+    float3 position;
+    float3 shadingNormal;
+    no_diff float3 geometricNormal;
+    no_diff float distance;
+    no_diff uint prim;
+    no_diff uint part;
+    no_diff uint material;
+    no_diff bool frontFacing;
+    no_diff uint slot;
+    no_diff SurfaceElement element;
+    no_diff float footprint;
+    no_diff float3 stretch;
+    no_diff float offset;
+
+    static SurfacePoint Miss() {
+        SurfacePoint point;
+        point.position = float3(0);
+        point.shadingNormal = float3(0);
+        point.geometricNormal = float3(0);
+        point.distance = kInfinity;
+        point.prim = kNoPrim;
+        point.part = kNoPrim;
+        point.material = kNoPrim;
+        point.frontFacing = true;
+        point.slot = 0;
+        point.element = SurfaceElement.Shape(0);
+        point.footprint = 0;
+        point.stretch = float3(0);
+        point.offset = 0;
+        return point;
+    }
+}
+
+Ray SpawnRay(SurfacePoint point, float3 direction, float tMax, float time) {
+    const float side = dot(direction, point.geometricNormal) < 0 ? -1.0f : 1.0f;
+    const float3 offset = side * point.offset * point.geometricNormal;
+    return Ray(OffsetRayOrigin(point.position, offset), direction, 0, tMax, time);
+}

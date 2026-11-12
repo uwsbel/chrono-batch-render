@@ -1,0 +1,9 @@
+dataset = "hide_and_seek"
+seed = 0
+
+[params]
+arena_size = 20.0
+hiders = 3
+seekers = 3
+boxes = 4
+ramps = 2

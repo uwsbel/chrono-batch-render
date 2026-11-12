@@ -1,0 +1,283 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "chrono_batch_render/bvh/builder.h"
+#include "chrono_batch_render/device/device.h"
+#include "chrono_batch_render/device/ref.h"
+#include "chrono_batch_render/scene/scene.h"
+#include "chrono_batch_render/scene/scene_update.h"
+#include "chrono_batch_render/scene/tables/bounds.h"
+#include "chrono_batch_render/scene/tables/captures.h"
+#include "chrono_batch_render/scene/tables/curves.h"
+#include "chrono_batch_render/scene/tables/instances.h"
+#include "chrono_batch_render/scene/tables/lights.h"
+#include "chrono_batch_render/scene/tables/materials.h"
+#include "chrono_batch_render/scene/tables/meshes.h"
+#include "chrono_batch_render/scene/tables/plans.h"
+#include "chrono_batch_render/scene/tables/points.h"
+#include "chrono_batch_render/scene/tables/products.h"
+#include "chrono_batch_render/scene/tables/semantics.h"
+#include "chrono_batch_render/scene/tables/sensor_pipelines.h"
+#include "chrono_batch_render/scene/tables/sensors.h"
+#include "chrono_batch_render/scene/tables/spectra.h"
+#include "chrono_batch_render/scene/tables/subsets.h"
+#include "chrono_batch_render/scene/tables/surfaces.h"
+#include "chrono_batch_render/scene/tables/table.h"
+#include "chrono_batch_render/scene/tables/tangents.h"
+#include "chrono_batch_render/scene/tables/textures.h"
+#include "chrono_batch_render/scene/tables/transforms.h"
+#include "chrono_batch_render/scene/tables/views.h"
+#include "chrono_batch_render/stage/columns/column_store.h"
+#include "chrono_batch_render/stage/publish/publisher.h"
+#include "chrono_batch_render/stage/structure/structure.h"
+#include "chrono_batch_render/stage/views/world_poses.h"
+
+namespace chrono::batch_render {
+
+class SceneImpl;
+
+[[nodiscard]] CHRONO_BATCH_RENDER_API StoreLock::Guard LockScene(const Scene* scene);
+
+class SceneImpl : private WorldPoseSource {
+  public:
+    SceneImpl(Scene& scene, device::Device& device, const SceneDesc& desc);
+    ~SceneImpl();
+    SceneImpl(const SceneImpl&) = delete;
+    SceneImpl& operator=(const SceneImpl&) = delete;
+
+    [[nodiscard]] StoreLock::Guard Lock() const {
+        return m_lock.Lock();
+    }
+
+    const StoreLock& GetLock() const {
+        return m_lock;
+    }
+
+    static SceneImpl& Get(Scene& scene) {
+        return *scene.m_impl;
+    }
+
+    static const SceneImpl& Get(const Scene& scene) {
+        return *scene.m_impl;
+    }
+
+    template <class Write> Prim Define(std::string_view path, SchemaId schema, const Write& write) {
+        return Define(path, schema, 0, write);
+    }
+
+    template <class Write>
+    Prim Define(std::string_view path, SchemaId schema, uint64_t apis, const Write& write) {
+        const auto lock = Lock();
+        const std::string paths[] = {std::string(path)};
+        return Handle(m_structure.Define(schema, paths, apis, write).firstPrim);
+    }
+
+    template <class Write>
+    PrimRange Define(Span<const std::string> paths, SchemaId schema, const Write& write,
+                     const BatchDesc& batch = {}) {
+        return Define(paths, schema, 0, write, batch);
+    }
+
+    template <class Write>
+    PrimRange Define(Span<const std::string> paths, SchemaId schema, uint64_t apis,
+                     const Write& write, const BatchDesc& batch = {}) {
+        const auto lock = Lock();
+        return Range(m_structure.Define(schema, std::span(paths.data(), paths.size()), apis, write,
+                                        batch.attachable));
+    }
+
+    template <class Write> void Apply(Span<const Prim> prims, SchemaId api, const Write& write) {
+        const auto lock = Lock();
+        m_structure.Apply(Indices(prims), api, write);
+    }
+
+    template <class Write>
+    void Apply(Span<const Prim> prims, SchemaId api, std::string_view instance,
+               const Write& write) {
+        const auto lock = Lock();
+        m_structure.Apply(Indices(prims), api, instance, write);
+    }
+
+    std::vector<uint32_t> Indices(Span<const Prim> prims) const;
+
+    Prim Handle(uint32_t prim) const;
+    PrimRange Range(const PrimBlock& block) const;
+    void Check(const Prim& prim) const;
+
+    device::Device& GetDevice() const {
+        return *m_device;
+    }
+
+    ColumnStore& GetColumnStore() {
+        return m_store;
+    }
+
+    Structure& GetStructure() {
+        return m_structure;
+    }
+
+    const Structure& GetStructure() const {
+        return m_structure;
+    }
+
+    Publisher& GetPublisher() {
+        return m_publisher;
+    }
+
+    bvh::Builder& GetBuilder() {
+        return *m_builder;
+    }
+
+    TransformTable& GetTransforms() {
+        return m_transforms;
+    }
+
+    MeshTable& GetMeshes() {
+        return m_meshes;
+    }
+
+    PointsTable& GetPoints() {
+        return m_points;
+    }
+
+    CurvesTable& GetCurves() {
+        return m_curves;
+    }
+
+    chrono::batch_render::BoundsTable& GetBounds() {
+        return m_bounds;
+    }
+
+    TangentTable& GetTangents() {
+        return m_tangents;
+    }
+
+    TextureTable& GetTextures() {
+        return m_textures;
+    }
+
+    const MaterialTable& GetMaterials() const {
+        return m_materials;
+    }
+
+    bool WaitsForKernels() const {
+        return m_waitForKernels;
+    }
+
+    const SubsetTable& GetSubsets() const {
+        return m_subsets;
+    }
+
+    SemanticTable& GetSemantics() {
+        return m_semantics;
+    }
+
+    InstanceTable& GetInstances() {
+        return m_instances;
+    }
+
+    LightTable& GetLights() {
+        return m_lights;
+    }
+
+    SurfaceTable& GetSurfaces() {
+        return m_surfaces;
+    }
+
+    SimulationClock& GetClock() {
+        return m_clock;
+    }
+
+    ProductTable& GetProducts() {
+        return m_products;
+    }
+
+    const ViewTable& GetViews() const {
+        return m_views;
+    }
+
+    const SensorPipelineTable& GetSensorPipelines() const {
+        return m_pipelines;
+    }
+
+    ProductPlans& GetPlans() {
+        return m_plans;
+    }
+
+    void AddCommitStep(std::function<bool()> step) {
+        m_commitSteps.push_back(std::move(step));
+    }
+
+    void RunCommitSteps() {
+        std::erase_if(m_commitSteps, [](const std::function<bool()>& step) { return step(); });
+    }
+
+    bool CommitStepsPending() const {
+        return !m_commitSteps.empty();
+    }
+
+    bool Pending() const {
+        return CommitStepsPending() || m_publisher.Pending();
+    }
+
+    SceneUpdate Update(const UpdateDesc& desc = {}, Stream producer = Stream::None());
+
+    void RefreshTransforms();
+
+    void UpdateIfPending() {
+        if (Pending()) {
+            Update();
+        }
+    }
+
+    device::Operation Publish(const UpdateDesc& desc, Stream producer);
+
+  private:
+    device::Tensor Read(ViewState& view, device::DType type, Stream consumer,
+                        QuaternionOrder order) override;
+    device::Tensor ReadScales(ViewState& view, device::DType type, Stream consumer) override;
+    device::Tensor Localize(ViewState& view, const device::Tensor& values,
+                            const device::Tensor* rotations, QuaternionOrder order,
+                            const device::Tensor& sources) override;
+
+  private:
+    StoreLock m_lock;
+    Scene& m_scene;
+    Ref<device::Device> m_device;
+    bool m_waitForKernels = true;
+    ColumnStore m_store;
+    Structure m_structure;
+    RenderHeader m_header;
+    Publisher m_publisher;
+    std::unique_ptr<bvh::Builder> m_builder;
+    TransformTable m_transforms;
+    MeshTable m_meshes;
+    PointsTable m_points;
+    CurvesTable m_curves;
+    chrono::batch_render::BoundsTable m_bounds;
+    TangentTable m_tangents;
+    TextureTable m_textures;
+    SemanticTable m_semantics;
+    SubsetTable m_subsets;
+    SensorTable m_sensors;
+    SimulationClock m_clock;
+    SensorPipelineTable m_pipelines;
+    ProductTable m_products;
+    ProductPlans m_plans;
+    MaterialTable m_materials;
+    SpectralTable m_spectra;
+    InstanceTable m_instances;
+    SurfaceTable m_surfaces;
+    LightTable m_lights;
+    ViewTable m_views;
+    std::vector<std::function<bool()>> m_commitSteps;
+};
+
+}

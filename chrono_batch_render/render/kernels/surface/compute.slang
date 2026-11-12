@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.query.hit;
+__exported import chrono_batch_render.render.kernels.surface.element;
+__exported import chrono_batch_render.render.kernels.surface.point;
+import chrono_batch_render.render.kernels.basis;
+
+using namespace chrono::batch_render;
+
+float3 Interpolate(Ptr<Float3> values, uint3 indices, float3 weights) {
+    return values[indices.x].Vector() * weights.x + values[indices.y].Vector() * weights.y +
+           values[indices.z].Vector() * weights.z;
+}
+
+float3 MeshShadingNormal(SurfaceRecord surface, ObjectSpace space, SurfaceElement element,
+                         float3 geometric) {
+    uint3 at = InterpolationIndices(element, Interpolation(surface.normalsInterpolation));
+    if (surface.normalIndexCount > 0) {
+        if (all(at < surface.normalIndexCount)) {
+            const Ptr<uint> indices = Ptr<uint>(surface.normalIndices);
+            at = uint3(indices[at.x], indices[at.y], indices[at.z]);
+        } else {
+            at = uint3(surface.normalsCount);
+        }
+    }
+    if (surface.normals != 0 && all(at < surface.normalsCount)) {
+        return space.NormalToWorld(Interpolate(Ptr<Float3>(surface.normals), at, element.weights));
+    }
+    if (surface.smooth != 0) {
+        return space.NormalToWorld(
+            Interpolate(Ptr<Float3>(surface.smooth), element.points, element.weights));
+    }
+    return geometric;
+}
+
+SurfacePoint ComputeSurfacePoint(HitQuery query, Ray ray, PrimHit primHit, float spread) {
+    const uint prim = primHit.prim;
+    const ObjectSpace space = query.LoadObjectSpace(primHit);
+    SurfacePoint point;
+    point.prim = prim;
+    point.part = prim;
+    point.material = PrimImageable(query.tables, prim).material;
+    point.slot = primHit.slot;
+    point.distance = primHit.hit.t;
+    const SurfaceRecord surface = query.tables->surfaces[primHit.slot];
+    const ShapeKind kind = ShapeKind(primHit.shape.kind);
+    const bool cloud = kind == ShapeKind::Points;
+    const uint index = cloud ? asuint(primHit.hit.barycentrics.x) : primHit.hit.primitive;
+    if (kind == ShapeKind::Curves) {
+        const CurvesRecord curves = query.tables->curves[primHit.shape.row];
+        const CurveSegment segment = LoadCurveSegment(query.tables->curves + primHit.shape.row, index);
+        CurveSpan span;
+        FindCurveSpan(curves, segment.span, BitsType(segment.bits), BitsBasis(segment.bits),
+                      BitsWrap(segment.bits), span);
+        const float t = (float(BitsStep(segment.bits)) + primHit.hit.barycentrics.x) /
+                        float(max(BitsSteps(segment.bits), 1u));
+        point.element = SurfaceElement.Curve(index, span, t);
+    } else {
+        point.element = cloud ? SurfaceElement.Point(index)
+                              : FindSurfaceElement(surface, primHit.hit);
+    }
+    float3 error;
+
+    if (point.element.mesh) {
+        const SubsetRecord subsets = query.tables->subsets[surface.meshRow];
+        const uint face = point.element.face;
+        if (face < subsets.materials.count) {
+            const uint material = Ptr<uint>(subsets.materials.address)[face];
+            if (material != kNoPrim) {
+                point.material = material;
+            }
+        }
+        if (face < subsets.parts.count) {
+            const uint part = Ptr<uint>(subsets.parts.address)[face];
+            if (part != kNoPrim) {
+                point.part = part;
+            }
+        }
+    }
+
+    if (point.element.mesh) {
+        const Ptr<Float3> positions = Ptr<Float3>(surface.points);
+        const uint3 corners = point.element.points;
+        const float3 a = positions[corners.x].Vector();
+        const float3 b = positions[corners.y].Vector();
+        const float3 c = positions[corners.z].Vector();
+        const float3 weights = point.element.weights;
+        const float3 local = weights.x * a + weights.y * b + weights.z * c;
+        point.position = space.ToWorld(local);
+        const float3 largest = max(max(abs(a), abs(b)), abs(c));
+        error = space.ErrorToWorld(local, Gamma(7) * max(largest.x, max(largest.y, largest.z)));
+        point.geometricNormal = space.NormalToWorld(cross(b - a, c - a));
+        point.shadingNormal =
+            MeshShadingNormal(surface, space, point.element, point.geometricNormal);
+    } else {
+        const Ray local = space.ToObject(ray);
+        const ShapeHit hit =
+            IntersectShape(primHit.shape, query.tables, index, local);
+        const float3 along = hit.t * local.direction;
+        const float3 at = local.origin + along;
+        point.position = space.ToWorld(at);
+        error = space.ErrorToWorld(at, Gamma(16) * (abs(local.origin) + abs(along)));
+        point.geometricNormal = space.NormalToWorld(hit.normal);
+        point.shadingNormal = point.geometricNormal;
+    }
+    const bool leftHanded = Orientation(surface.orientation) == Orientation::LeftHanded;
+    point.frontFacing = (dot(point.geometricNormal, ray.direction) < 0) != leftHanded;
+    if (dot(point.geometricNormal, ray.direction) > 0) {
+        point.geometricNormal = -point.geometricNormal;
+    }
+    if (dot(point.shadingNormal, point.geometricNormal) < 0) {
+        point.shadingNormal = -point.shadingNormal;
+    }
+    point.offset = dot(abs(point.geometricNormal), error);
+
+    point.footprint = spread * primHit.hit.t;
+    const float cosine = max(abs(dot(ray.direction, point.geometricNormal)), 0.05f);
+    const float3 across =
+        ray.direction - dot(ray.direction, point.geometricNormal) * point.geometricNormal;
+    point.stretch = length(across) > 1e-6f
+                        ? normalize(across) * point.footprint / cosine
+                        : Basis(point.geometricNormal).tangent * point.footprint;
+    return point;
+}

@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+__exported import chrono_batch_render.render.kernels.spectrum.ispectrum;
+import chrono_batch_render.scene.records.render_tables;
+
+using namespace chrono::batch_render;
+
+static const uint kSpectrumBands = 8;
+
+static Ptr<DetectorRecord> gBandDetector;
+static uint gBandRow;
+static Ptr<RenderTables> gSpectra;
+
+void UseBands(Ptr<RenderTables> tables, uint row) {
+    gSpectra = tables;
+    gBandDetector = tables->detectors + row;
+    gBandRow = row;
+}
+
+void UseSpectra(Ptr<RenderTables> tables) {
+    gSpectra = tables;
+}
+
+bool KnownSpectrum(uint spectrum) {
+    return spectrum < gSpectra->spectra.count;
+}
+
+float4 FromRgbBands(uint row) {
+    return gBandDetector->bands.fromRgb[row].Vector();
+}
+
+float4 ToRgbBands(uint row) {
+    return gBandDetector->bands.toRgb[row].Vector();
+}
+
+float BandCenter(uint band) {
+    return gBandDetector->bands.first + (float(band) + 0.5f) * gBandDetector->bands.width;
+}
+
+struct BandSpectrum : ISpectrum {
+    float4 low;
+    float4 high;
+
+    [Differentiable]
+    __init(float4 low, float4 high) {
+        this.low = low;
+        this.high = high;
+    }
+
+    [Differentiable]
+    static BandSpectrum Constant(float value) {
+        return BandSpectrum(float4(value), float4(value));
+    }
+
+    [Differentiable]
+    static BandSpectrum FromRgb(float3 rgb) {
+        return BandSpectrum(max(rgb.x * no_diff FromRgbBands(0) + rgb.y * no_diff FromRgbBands(2) +
+                                    rgb.z * no_diff FromRgbBands(4),
+                                float4(0)),
+                            max(rgb.x * no_diff FromRgbBands(1) + rgb.y * no_diff FromRgbBands(3) +
+                                    rgb.z * no_diff FromRgbBands(5),
+                                float4(0)));
+    }
+
+    [Differentiable]
+    static BandSpectrum FromLibrary(no_diff uint spectrum) {
+        if (!KnownSpectrum(spectrum) || gBandRow >= gSpectra->spectra.detectors) {
+            return BandSpectrum.Constant(0);
+        }
+        const Ptr<float> bands =
+            gSpectra->spectra.bands + (gBandRow * gSpectra->spectra.count + spectrum) * kSpectrumBands;
+        return BandSpectrum(float4(bands[0], bands[1], bands[2], bands[3]),
+                            float4(bands[4], bands[5], bands[6], bands[7]));
+    }
+
+    [Differentiable]
+    static BandSpectrum Blackbody(float kelvin) {
+        float4 low;
+        float4 high;
+        [ForceUnroll]
+        for (uint band = 0; band < 4; ++band) {
+            low[band] = Planck(no_diff BandCenter(band), kelvin);
+            high[band] = Planck(no_diff BandCenter(band + 4), kelvin);
+        }
+        return BandSpectrum(low, high);
+    }
+
+    [Differentiable]
+    float3 ToRgb() {
+        return float3(dot(low, no_diff ToRgbBands(0)) + dot(high, no_diff ToRgbBands(1)),
+                      dot(low, no_diff ToRgbBands(2)) + dot(high, no_diff ToRgbBands(3)),
+                      dot(low, no_diff ToRgbBands(4)) + dot(high, no_diff ToRgbBands(5)));
+    }
+
+    [Differentiable]
+    BandValues Bands() {
+        BandValues values;
+        values.low = low;
+        values.high = high;
+        return values;
+    }
+
+    [Differentiable]
+    BandSpectrum Add(BandSpectrum other) {
+        return BandSpectrum(low + other.low, high + other.high);
+    }
+
+    [Differentiable]
+    BandSpectrum Subtract(BandSpectrum other) {
+        return BandSpectrum(low - other.low, high - other.high);
+    }
+
+    [Differentiable]
+    BandSpectrum Multiply(BandSpectrum other) {
+        return BandSpectrum(low * other.low, high * other.high);
+    }
+
+    [Differentiable]
+    BandSpectrum Scale(float factor) {
+        return BandSpectrum(low * factor, high * factor);
+    }
+
+    [Differentiable]
+    BandSpectrum Divide(BandSpectrum other) {
+        return BandSpectrum(low / other.low, high / other.high);
+    }
+
+    [Differentiable]
+    BandSpectrum Sqrt() {
+        return BandSpectrum(sqrt(low), sqrt(high));
+    }
+
+    [Differentiable]
+    BandSpectrum Clamp(float lowest, float highest) {
+        return BandSpectrum(clamp(low, lowest, highest), clamp(high, lowest, highest));
+    }
+
+    [Differentiable]
+    float Average() {
+        return (dot(low, float4(1)) + dot(high, float4(1))) / kSpectrumBands;
+    }
+
+    [Differentiable]
+    float Luminance() {
+        return dot(ToRgb(), kLuminanceWeights);
+    }
+
+    [Differentiable]
+    float MaxValue() {
+        const float4 most = max(low, high);
+        return max(max(most.x, most.y), max(most.z, most.w));
+    }
+}

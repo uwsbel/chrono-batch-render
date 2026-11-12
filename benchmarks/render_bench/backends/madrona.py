@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: BSD-3-Clause
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+
+import numpy as np
+
+from render_bench.backends.base import (
+    BackendInfo,
+    Capabilities,
+    hits,
+    single,
+)
+from render_bench.config import Workload
+from render_bench.scene import Scene, State, decompose
+
+VERSION = "madrona b908c43 + cuda 12.8 headers + rt depth fix"
+ROOT = Path(__file__).resolve().parents[2]
+CACHE = ROOT / "data" / "madrona-cache" / "native"
+MADRONA = ROOT / "native" / "madrona" / "build" / "madrona-src"
+RUNTIME_SOURCES = (
+    MADRONA / "src" / "mw" / "device",
+    MADRONA / "include" / "madrona",
+    ROOT / "native" / "madrona" / "src",
+)
+CAMERA_AXES = np.array([-np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)])
+
+
+def multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    ax, ay, az, aw = np.moveaxis(a, -1, 0)
+    bx, by, bz, bw = np.moveaxis(b, -1, 0)
+    return np.stack(
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+        axis=-1,
+    )
+
+
+def scalar_first(quaternions: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(np.roll(quaternions, 1, axis=-1), np.float32)
+
+
+def kernel_caches(module: Path, mode: str) -> dict[str, str]:
+    digest = hashlib.sha256(module.read_bytes())
+    for root in RUNTIME_SOURCES:
+        for source in sorted(path for path in root.rglob("*") if path.is_file()):
+            digest.update(source.read_bytes())
+    digest = digest.hexdigest()[:16]
+    folder = CACHE / f"{digest}-{mode}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return {
+        "MADRONA_MWGPU_KERNEL_CACHE": str(folder / "kernels"),
+        "MADRONA_BVH_KERNEL_CACHE": str(folder / "bvh"),
+    }
+
+
+class MadronaBackend:
+    def __init__(self):
+        import _madrona_bench
+
+        self._module = _madrona_bench
+
+    def info(self) -> BackendInfo:
+        return BackendInfo(
+            "madrona",
+            VERSION,
+            "cuda:0",
+            {
+                "renderer": "raytracer",
+                "deviations": "base colors as 1x1 textures, fixed sun towards (0.5, 0.5, 2) with ambient 0.4, lighting clamped at 1, shadows only in the direct tier",
+            },
+        )
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            frozenset({"depth", "direct"}),
+            frozenset({"rgb", "depth"}),
+            max_spp=1,
+            square_only=True,
+            sm_limit=True,
+        )
+
+    def load(self, scene: Scene, workload: Workload) -> None:
+        shadows = workload.tier == "direct"
+        os.environ["MADRONA_RT_SHADOWS"] = "1" if shadows else "0"
+        mode = "rt-shadows" if shadows else "rt"
+        for name, path in kernel_caches(Path(self._module.__file__), mode).items():
+            os.environ.setdefault(name, path)
+        if len({len(found) for found in scene.views}) != 1:
+            raise ValueError("madrona needs the same number of cameras in every world")
+
+        order = np.concatenate(scene.members)
+        keys = np.stack([scene.instances.mesh[order], scene.instances.material[order]], axis=1)
+        pairs, instance_objects = np.unique(keys, axis=0, return_inverse=True)
+        instance_objects = instance_objects.reshape(-1).astype(np.int32)
+        world_offsets = np.cumsum([0] + [len(found) for found in scene.members]).astype(np.uint32)
+        vertex_offsets = np.cumsum(
+            [0] + [len(mesh.positions) for mesh in scene.meshes[:-1]]
+        ).astype(np.uint32)
+        triangle_offsets = np.cumsum(
+            [0] + [len(mesh.indices) for mesh in scene.meshes[:-1]]
+        ).astype(np.uint32)
+        fov = single("madrona", scene.cameras.fov_y, "field of view")
+        self._far = single("madrona", scene.cameras.far, "far plane")
+
+        self._renderer = self._module.Renderer(
+            0,
+            scene.world_count,
+            workload.width,
+            workload.height,
+            fov,
+            single("madrona", scene.cameras.near, "near plane"),
+            self._far,
+            np.concatenate([mesh.positions for mesh in scene.meshes]).astype(np.float32),
+            np.concatenate([mesh.normals for mesh in scene.meshes]).astype(np.float32),
+            np.concatenate([mesh.indices for mesh in scene.meshes]).astype(np.uint32),
+            vertex_offsets,
+            triangle_offsets,
+            np.array([mesh for mesh, _ in pairs], np.int32),
+            np.array([scene.materials[material].base_color for _, material in pairs], np.float32),
+            instance_objects,
+            world_offsets,
+            len(scene.views[0]),
+        )
+
+        self._rows = np.empty(len(scene.instances), np.int64)
+        self._rows[np.concatenate(scene.members)] = np.arange(len(scene.instances))
+        self._camera_rows = np.empty(len(scene.cameras), np.int64)
+        self._camera_rows[np.concatenate(scene.views)] = np.arange(len(scene.cameras))
+        translation, rotation, scale = decompose(scene.instances.transform)
+        self._positions = np.zeros((len(scene.instances), 3), np.float32)
+        self._rotations = np.zeros((len(scene.instances), 4), np.float32)
+        self._scales = np.zeros((len(scene.instances), 3), np.float32)
+        self._positions[self._rows] = translation
+        self._rotations[self._rows] = scalar_first(rotation)
+        self._scales[self._rows] = scale
+        self._camera_positions = np.zeros((len(scene.cameras), 3), np.float32)
+        self._camera_rotations = np.zeros((len(scene.cameras), 4), np.float32)
+        self._moving = self._rows[scene.motion.instance]
+        self._size = (workload.height, workload.width)
+        self._outputs = workload.outputs
+
+    def update(self, state: State) -> None:
+        self._positions[self._moving] = state.translation
+        self._rotations[self._moving] = scalar_first(state.rotation)
+        self._scales[self._moving] = state.scale
+        self._camera_positions[self._camera_rows] = state.camera_translation
+        self._camera_rotations[self._camera_rows] = scalar_first(
+            multiply(state.camera_rotation, CAMERA_AXES)
+        )
+        self._renderer.set_instances(self._positions, self._rotations, self._scales)
+        self._renderer.set_cameras(self._camera_positions, self._camera_rotations)
+
+    def render(self) -> None:
+        self._renderer.render()
+
+    def sync(self) -> None:
+        self._renderer.synchronize()
+
+    def readback(self) -> dict[str, np.ndarray]:
+        views = len(self._camera_rows)
+        height, width = self._size
+        frames = {}
+        if "rgb" in self._outputs:
+            color = np.empty((views, height, width, 4), np.uint8)
+            self._renderer.read_color(color)
+            color = color.transpose(0, 2, 1, 3)
+            frames["rgb"] = (
+                np.ascontiguousarray(color[self._camera_rows, ..., :3], np.float32) / 255
+            )
+        if "depth" in self._outputs:
+            depth = np.empty((views, height, width), np.float32)
+            self._renderer.read_depth(depth)
+            depth = depth.transpose(0, 2, 1)[self._camera_rows]
+            frames["depth"] = np.where(hits(depth) & (depth < self._far), depth, np.inf)[..., None]
+        return frames
+
+    def stream(self) -> int | None:
+        return self._renderer.stream or None
+
+    def close(self) -> None:
+        self._renderer = None

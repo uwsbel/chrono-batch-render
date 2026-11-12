@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: BSD-3-Clause
+chrono_batch_render_object_library(
+    chrono_batch_render_scene
+    prim.cpp
+    rotation.cpp
+    scene.cpp
+    tables/bounds.cpp
+    tables/captures.cpp
+    tables/instance_layout.cpp
+    tables/instances.cpp
+    tables/lights.cpp
+    tables/connections.cpp
+    tables/curves.cpp
+    tables/materials.cpp
+    tables/pack.cpp
+    tables/meshes.cpp
+    tables/plans.cpp
+    tables/points.cpp
+    tables/procedural.cpp
+    tables/products.cpp
+    tables/regions.cpp
+    tables/semantics.cpp
+    tables/sensor_pipelines.cpp
+    tables/sensors.cpp
+    tables/spectra.cpp
+    tables/subsets.cpp
+    tables/surfaces.cpp
+    tables/tangents.cpp
+    tables/textures.cpp
+    tables/transforms.cpp
+    tables/views.cpp
+    "${chrono_batch_render_scene_defines}"
+)
+target_link_libraries(
+    chrono_batch_render_scene
+    PUBLIC
+        chrono_batch_render_stage
+        chrono_batch_render_device
+        chrono_batch_render_algorithms
+        chrono_batch_render_bvh
+        chrono_batch_render_io
+        chrono_batch_render_texture
+        chrono_batch_render_material
+        chrono_batch_render_graph
+        chrono_batch_render_sensor_pipeline
+        chrono_batch_render_mikktspace
+)
+chrono_batch_render_embed(
+    chrono_batch_render_scene
+    LIBRARY kSceneKernels
+    USES
+        kStageKernels
+        kBvhKernels
+        kIoKernels
+        kTextureKernels
+    HEADER chrono_batch_render/scene/kernels.h
+    ROOTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tables/kernels|chrono_batch_render/scene/tables/kernels/|*.slang"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tables/kernels|chrono_batch_render/scene/tables/kernels/|*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/records|chrono_batch_render/scene/records/|*.slang"
+        "${CMAKE_CURRENT_SOURCE_DIR}/records|chrono_batch_render/scene/records/|*.h"
+)
+
+chrono_batch_render_static_library(
+    chrono_batch_render_scene_internal
+    chrono_batch_render_scene
+    chrono_batch_render_stage_internal
+    chrono_batch_render_bvh_internal
+    chrono_batch_render_io_internal
+    chrono_batch_render_texture_internal
+    chrono_batch_render_material_internal
+    chrono_batch_render_graph_internal
+    chrono_batch_render_sensor_pipeline_internal
+)
+
+chrono_batch_render_public_files(
+    prim.h
+    records/render_vars.h
+    records/semantics.h
+    rotation.h
+    scene.h
+)

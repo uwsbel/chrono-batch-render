@@ -1,0 +1,103 @@
+name: Wheels
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, runner: ubuntu-24.04, pythons: "cp310-* cp311-* cp312-*" }
+          - { platform: linux-aarch64, runner: ubuntu-24.04-arm, pythons: "cp310-* cp311-* cp312-*" }
+          - { platform: windows-amd64, runner: windows-2025, msvc: x64, pythons: "cp310-* cp311-* cp312-*" }
+          - { platform: windows-arm64, runner: windows-11-arm, msvc: arm64, pythons: "cp311-* cp312-*" }
+          - { platform: macos-arm64, runner: macos-26, pythons: "cp310-* cp311-* cp312-*" }
+    env:
+      CIBW_BUILD: ${{ matrix.pythons }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/msvc
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.msvc }}
+      - name: Install Ninja and ccache
+        if: runner.os == 'Windows'
+        run: choco install ninja ccache --no-progress -y
+      - name: Build with Ninja and ccache
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          {
+            echo "CMAKE_GENERATOR=Ninja"
+            echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+            echo "CCACHE_DIR=${{ github.workspace }}\\.ccache"
+            echo "CCACHE_BASEDIR=${{ github.workspace }}"
+            echo "CCACHE_MAXSIZE=1G"
+          } >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Windows'
+        id: ccache
+        with:
+          path: .ccache
+          key: ccache-wheel-${{ matrix.platform }}-${{ github.sha }}
+          restore-keys: ccache-wheel-${{ matrix.platform }}-
+      - uses: pypa/cibuildwheel@b3395e271a35f73dad77f21802abe9b986dfe299 # v4.3.1
+        with:
+          output-dir: wheelhouse
+      - name: Show the ccache statistics
+        if: runner.os == 'Windows'
+        run: ccache --show-stats
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >
+          always() && runner.os == 'Windows' && github.event_name == 'push'
+          && steps.ccache.outputs.cache-hit != 'true'
+        with:
+          path: .ccache
+          key: ccache-wheel-${{ matrix.platform }}-${{ github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Import the wheels
+        shell: bash
+        run: |
+          python -m pip install numpy
+          python -m pip install --no-index --find-links wheelhouse chrono-batch-render
+          cd "$RUNNER_TEMP"
+          python -c "import chrono_batch_render, chrono_batch_render.viewer; print(chrono_batch_render.__version__)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the windowing libraries the viewer builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev
+      - run: python -m pip install build
+      - run: python -m build --sdist
+      - name: Install from the sdist
+        run: |
+          python -m pip install dist/*.tar.gz
+          cd "$RUNNER_TEMP" && python -c "import chrono_batch_render; print(chrono_batch_render.__version__)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdist
+          path: dist/*.tar.gz
