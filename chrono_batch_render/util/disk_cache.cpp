@@ -17,7 +17,6 @@
 #include "chrono_batch_render/util/environment.h"
 #include "chrono_batch_render/util/log.h"
 #include "chrono_batch_render/util/text.h"
-#include "chrono_batch_render/util/version.h"
 
 namespace chrono::batch_render {
 namespace {
@@ -107,8 +106,7 @@ std::filesystem::path UserCacheDirectory() {
 }
 
 std::filesystem::path KernelCacheDirectory(const std::filesystem::path& root) {
-    const Version version = GetBuildInfo().version;
-    return root / "kernels" / fmt::format("{}.{}.{}", version.major, version.minor, version.patch);
+    return root / "kernels";
 }
 
 void TrimKernelCache(const std::filesystem::path& root, uint64_t limit) {
