@@ -80,14 +80,14 @@
   </div>
   <div class="Box-row Box-row--focus-gray py-2 d-flex">
     <div role="gridcell" class="color-fg-muted flex-auto min-width-0 col-md-2"><a href="#L42">chrono::batch_render::bvh::Builder::SubmitRefit(chrono::batch_render::device::CommandEncoder&amp;&amp;, chrono::batch_render::bvh::Tlas&amp;, chrono::batch_render::device::BufferRange, std::optional&lt;chrono::batch_render::device::BufferRange&gt;, std::span&lt;unsigned int const, 18446744073709551615ul&gt;) (chrono_batch_render/bvh/builder.cpp:42)</a>    </div>
-    <div role="gridcell" class="color-fg-muted flex-auto min-width-0 d-flex flex-justify-end flex-wrap flex-items-baseline" data-sort="166">called 166 times</div>
+    <div role="gridcell" class="color-fg-muted flex-auto min-width-0 d-flex flex-justify-end flex-wrap flex-items-baseline" data-sort="180">called 180 times</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">100.0%</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">100.0%</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">86.0%</div>
   </div>
   <div class="Box-row Box-row--focus-gray py-2 d-flex">
     <div role="gridcell" class="color-fg-muted flex-auto min-width-0 col-md-2"><a href="#L28">chrono::batch_render::bvh::Tlas::Handle(unsigned int) const (chrono_batch_render/bvh/builder.cpp:28)</a>    </div>
-    <div role="gridcell" class="color-fg-muted flex-auto min-width-0 d-flex flex-justify-end flex-wrap flex-items-baseline" data-sort="930">called 930 times</div>
+    <div role="gridcell" class="color-fg-muted flex-auto min-width-0 d-flex flex-justify-end flex-wrap flex-items-baseline" data-sort="1068">called 1068 times</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">100.0%</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">100.0%</div>
     <div role="gridcell" class="color-fg-muted d-flex flex-justify-end flex-wrap col-2">86.0%</div>
@@ -356,7 +356,7 @@
         <td class="text-right src linenos"><a class="normal" id="L28" href="#L28">28</a></td>
         <td class="text-right src linenos ws-unset">
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">930</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">1068</td>
         <td class="src coveredLine show_coveredLine"><span class="kt">uint64_t</span><span class="w"> </span><span class="n">Tlas</span><span class="o">::</span><span class="n">Handle</span><span class="p">(</span><span class="kt">uint32_t</span><span class="w"> </span><span class="n">world</span><span class="p">)</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="p">{</span></td>
       </tr>
       <tr>
@@ -366,11 +366,11 @@
             <summary>2/2</summary>
             <div class="text-left position-absolute color-bg-subtle p-3 mt-2" style="z-index: 1;">
               <div class="color-taken-branch">&check; Branch 0 taken 1 time.</div>
-              <div class="color-taken-branch">&check; Branch 1 taken 929 times.</div>
+              <div class="color-taken-branch">&check; Branch 1 taken 1067 times.</div>
             </div>
           </details>
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">930</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">1068</td>
         <td class="src coveredLine show_coveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">world</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">Count</span><span class="p">())</span><span class="w"> </span><span class="p">{</span></td>
       </tr>
       <tr>
@@ -397,7 +397,7 @@
         <td class="text-right src linenos"><a class="normal" id="L32" href="#L32">32</a></td>
         <td class="text-right src linenos ws-unset">
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">929</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">1067</td>
         <td class="src coveredLine show_coveredLine"><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">m_handles</span><span class="p">[</span><span class="n">world</span><span class="p">];</span></td>
       </tr>
       <tr>
@@ -480,7 +480,7 @@
         <td class="text-right src linenos"><a class="normal" id="L42" href="#L42">42</a></td>
         <td class="text-right src linenos ws-unset">
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">166</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">180</td>
         <td class="src coveredLine show_coveredLine"><span class="kt">void</span><span class="w"> </span><span class="n">Builder</span><span class="o">::</span><span class="n">SubmitRefit</span><span class="p">(</span><span class="n">device</span><span class="o">::</span><span class="n">CommandEncoder</span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">encoder</span><span class="p">,</span><span class="w"> </span><span class="n">Tlas</span><span class="o">&amp;</span><span class="w"> </span><span class="n">tlas</span><span class="p">,</span></td>
       </tr>
       <tr>
@@ -501,7 +501,7 @@
         <td class="text-right src linenos"><a class="normal" id="L45" href="#L45">45</a></td>
         <td class="text-right src linenos ws-unset">
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">166</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">180</td>
         <td class="src coveredLine show_coveredLine"><span class="w">    </span><span class="n">Refit</span><span class="p">(</span><span class="n">encoder</span><span class="p">,</span><span class="w"> </span><span class="n">tlas</span><span class="p">,</span><span class="w"> </span><span class="n">instances</span><span class="p">,</span><span class="w"> </span><span class="n">counts</span><span class="p">,</span><span class="w"> </span><span class="n">worlds</span><span class="p">);</span></td>
       </tr>
       <tr>
@@ -510,18 +510,18 @@
           <details class="normal details-overlay">
             <summary>1/1</summary>
             <div class="text-left position-absolute color-bg-subtle p-3 mt-2" style="z-index: 1;">
-              <div class="color-taken-branch">&check; Branch 2 taken 166 times.</div>
+              <div class="color-taken-branch">&check; Branch 2 taken 180 times.</div>
             </div>
           </details>
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">166</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">180</td>
         <td class="src coveredLine show_coveredLine"><span class="w">    </span><span class="n">m_device</span><span class="p">.</span><span class="n">GetQueue</span><span class="p">().</span><span class="n">Submit</span><span class="p">(</span><span class="n">encoder</span><span class="p">.</span><span class="n">Finish</span><span class="p">());</span></td>
       </tr>
       <tr>
         <td class="text-right src linenos"><a class="normal" id="L47" href="#L47">47</a></td>
         <td class="text-right src linenos ws-unset">
         </td>
-        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">166</td>
+        <td class="linecount coveredLine show_coveredLine pr-2 pl-2 color-fg-muted text-right">180</td>
         <td class="src coveredLine show_coveredLine"><span class="p">}</span></td>
       </tr>
       <tr>
@@ -700,7 +700,7 @@
         <hr class="block-separator"/>
         <footer class="text-center">
           Created using <a href="http://gcovr.com/en/8.8">GCOVR (Version 8.8)</a>
-          at 2026-11-12 16:53:24+00:00
+          at 2026-11-12 17:46:35+00:00
         </footer>
       </div>
     </div>
