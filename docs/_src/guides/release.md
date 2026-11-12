@@ -69,7 +69,7 @@ Then commit straight to `main` to set `VERSION` to the next minor.
 
 ## Guidelines
 
-- Tag only on `release-X.Y` branches, never on `main`.
+- Tag only on `release-X.Y` branches, never on `main`. The release workflow fails any `vX.Y.Z` tag whose commit is not on `release-X.Y`.
 - Fix on `main` first and cherry-pick with `-x`. Commit straight to the release branch only for release-only fixes.
 - Release branches take fixes only, never features.
 - Use annotated tags (`git tag -a`).

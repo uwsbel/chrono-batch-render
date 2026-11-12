@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Check the tag
         run: |
           project=$(grep -m 1 -oP '^\s*VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
@@ -23,6 +25,11 @@ jobs:
           version=$project$prerelease
           if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match CMakeLists.txt's version $version"
+            exit 1
+          fi
+          branch=release-${project%.*}
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] && ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on $branch"
             exit 1
           fi
           echo "Version $version"
