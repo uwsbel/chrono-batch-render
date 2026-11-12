@@ -7,9 +7,11 @@
 #include <optional>
 #include <string>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include "chrono_batch_render/util/text.h"
+#include "chrono_batch_render/util/version.h"
 #include "support/support.h"
 
 namespace chrono::batch_render {
@@ -89,8 +91,11 @@ TEST(DiskCacheTest, LoadingAnEntryMarksItRecentlyUsed) {
     EXPECT_GT(std::filesystem::last_write_time(entry), old + std::chrono::hours(47));
 }
 
-TEST(DiskCacheTest, KernelsAreSharedAcrossChronoBatchRenderVersions) {
-    EXPECT_EQ(KernelCacheDirectory("/cache"), std::filesystem::path("/cache") / "kernels");
+TEST(DiskCacheTest, KernelsLiveUnderTheirChronoBatchRenderVersion) {
+    const Version version = GetBuildInfo().version;
+    EXPECT_EQ(KernelCacheDirectory("/cache"),
+              std::filesystem::path("/cache") / "kernels" /
+                  fmt::format("{}.{}.{}", version.major, version.minor, version.patch));
 }
 
 TEST(DiskCacheTest, TrimmingDropsOnlyTheLeastRecentlyUsedKernels) {

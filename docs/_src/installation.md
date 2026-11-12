@@ -221,7 +221,7 @@ cpack --preset package
 
 ## Kernel cache
 
-Chrono Batch Render compiles its kernels the first time they run and keeps them in a cache, so later runs start quickly. The cache lives in `~/.cache/chrono-batch-render` on Linux, `~/Library/Caches/chrono-batch-render` on macOS and `%LOCALAPPDATA%\chrono-batch-render\cache` on Windows, and `CHRONO_BATCH_RENDER_CACHE_DIR` moves it anywhere else. Kernels sit in `kernels`, keyed by their sources and compiler, so versions share the ones that didn't change, and the cache stays under 1 GiB by dropping the least recently used. Deleting the folder is always safe.
+Chrono Batch Render compiles its kernels the first time they run and keeps them in a cache, so later runs start quickly. The cache lives in `~/.cache/chrono-batch-render` on Linux, `~/Library/Caches/chrono-batch-render` on macOS and `%LOCALAPPDATA%\chrono-batch-render\cache` on Windows, and `CHRONO_BATCH_RENDER_CACHE_DIR` moves it anywhere else. Kernels sit in `kernels/<version>`, so each version of Chrono Batch Render keeps its own, and all of them together stay under 1 GiB by dropping the least recently used. Deleting the folder is always safe.
 
 ## Troubleshooting
 
