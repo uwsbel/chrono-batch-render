@@ -1040,7 +1040,7 @@
 </ul>
 <h2 id="guidelines">Guidelines<a class="headerlink" href="#guidelines" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Tag only on <code>release-X.Y</code> branches, never on <code>main</code>.</li>
+<li>Tag only on <code>release-X.Y</code> branches, never on <code>main</code>. The release workflow fails any <code>vX.Y.Z</code> tag whose commit is not on <code>release-X.Y</code>.</li>
 <li>Fix on <code>main</code> first and cherry-pick with <code>-x</code>. Commit straight to the release branch only for release-only fixes.</li>
 <li>Release branches take fixes only, never features.</li>
 <li>Use annotated tags (<code>git tag -a</code>).</li>
