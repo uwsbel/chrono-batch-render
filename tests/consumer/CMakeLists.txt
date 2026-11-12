@@ -5,7 +5,7 @@ project(ChronoBatchRenderConsumer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(chrono_batch_render 0.1 REQUIRED CONFIG OPTIONAL_COMPONENTS vulkan)
+find_package(chrono_batch_render REQUIRED CONFIG OPTIONAL_COMPONENTS vulkan)
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE chrono_batch_render::chrono_batch_render)
