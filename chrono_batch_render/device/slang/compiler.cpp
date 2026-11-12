@@ -8,6 +8,7 @@
 #include <iterator>
 #include <optional>
 #include <regex>
+#include <set>
 #include <vector>
 
 #include <fmt/format.h>
@@ -115,10 +116,13 @@ std::string Normal(std::string_view path) {
     return normal;
 }
 
+constexpr std::string_view kBinaryExtension = ".slang-module";
+
 class ModuleFiles final : public ISlangFileSystem {
   public:
-    ModuleFiles(const KernelLibrary* library, const SourceFiles& sources)
-        : m_library(library), m_sources(sources) {}
+    ModuleFiles(const KernelLibrary* library, const SourceFiles& sources,
+                const DiskCache* modules = nullptr, std::string key = {})
+        : m_library(library), m_sources(sources), m_modules(modules), m_key(std::move(key)) {}
 
     SLANG_NO_THROW SlangResult SLANG_MCALL queryInterface(const SlangUUID& uuid,
                                                           void** object) override {
@@ -143,14 +147,14 @@ class ModuleFiles final : public ISlangFileSystem {
 
     SLANG_NO_THROW SlangResult SLANG_MCALL loadFile(const char* path, ISlangBlob** blob) override {
         std::string file = FilePath(Normal(path));
+        if (file.ends_with(kBinaryExtension)) {
+            return LoadBinary(file, blob);
+        }
         const std::optional<std::string_view> found = FindFile(m_library, m_sources, file);
         if (!found) {
             return SLANG_E_NOT_FOUND;
         }
-        if (std::ranges::find(m_read, file, &std::pair<std::string, std::string>::first) ==
-            m_read.end()) {
-            m_read.emplace_back(std::move(file), Digest(*found));
-        }
+        Record(std::move(file), *found);
         *blob = slang_createBlob(found->data(), found->size());
         return SLANG_OK;
     }
@@ -159,10 +163,86 @@ class ModuleFiles final : public ISlangFileSystem {
         return m_read;
     }
 
+    void RecordDependencies(slang::ISession& session) {
+        for (SlangInt index = 0; index < session.getLoadedModuleCount(); ++index) {
+            slang::IModule* module = session.getLoadedModule(index);
+            for (SlangInt32 dependency = 0; dependency < module->getDependencyFileCount();
+                 ++dependency) {
+                std::string file = FilePath(Normal(module->getDependencyFilePath(dependency)));
+                if (const std::optional<std::string_view> found =
+                        FindFile(m_library, m_sources, file)) {
+                    Record(std::move(file), *found);
+                }
+            }
+        }
+    }
+
+    void StoreBinaries(slang::ISession& session) const {
+        if (m_modules == nullptr) {
+            return;
+        }
+        for (SlangInt index = 0; index < session.getLoadedModuleCount(); ++index) {
+            slang::IModule* module = session.getLoadedModule(index);
+            const char* path = module->getFilePath();
+            if (path == nullptr) {
+                continue;
+            }
+            const std::string file = FilePath(Normal(path));
+            if (!file.ends_with(kExtension) || m_served.contains(file) ||
+                m_sources.contains(file)) {
+                continue;
+            }
+            const std::optional<std::string_view> found = FindFile(m_library, m_sources, file);
+            ComPtr<ISlangBlob> binary;
+            if (!found || SLANG_FAILED(module->serialize(binary.writeRef()))) {
+                continue;
+            }
+            m_modules->Store(
+                BinaryKey(file, *found),
+                {static_cast<const char*>(binary->getBufferPointer()), binary->getBufferSize()});
+        }
+    }
+
   private:
+    void Record(std::string file, std::string_view source) {
+        if (std::ranges::find(m_read, file, &std::pair<std::string, std::string>::first) ==
+            m_read.end()) {
+            m_read.emplace_back(std::move(file), Digest(source));
+        }
+    }
+
+    std::string BinaryKey(std::string_view file, std::string_view source) const {
+        return fmt::format("{} module {} {}", m_key, file, Digest(source));
+    }
+
+    SlangResult LoadBinary(const std::string& file, ISlangBlob** blob) {
+        if (m_modules == nullptr) {
+            return SLANG_E_NOT_FOUND;
+        }
+        const std::string source =
+            file.substr(0, file.size() - kBinaryExtension.size()) + std::string(kExtension);
+        if (m_sources.contains(source)) {
+            return SLANG_E_NOT_FOUND;
+        }
+        const std::optional<std::string_view> found = FindFile(m_library, m_sources, source);
+        if (!found) {
+            return SLANG_E_NOT_FOUND;
+        }
+        const std::optional<std::string> binary = m_modules->Load(BinaryKey(source, *found));
+        if (!binary) {
+            return SLANG_E_NOT_FOUND;
+        }
+        m_served.insert(source);
+        *blob = slang_createBlob(binary->data(), binary->size());
+        return SLANG_OK;
+    }
+
     const KernelLibrary* m_library;
     const SourceFiles& m_sources;
+    const DiskCache* m_modules;
+    std::string m_key;
     std::vector<std::pair<std::string, std::string>> m_read;
+    std::set<std::string> m_served;
 };
 
 void Reflect(slang::EntryPointReflection& reflected, slang::ProgramLayout& layout,
@@ -228,6 +308,17 @@ void AdaptCudaSource(Backend backend, std::string_view entry, std::string_view l
     }
 }
 
+std::string SessionKey(Backend backend, Traversal traversal, Sampling sampling, bool debugInfo,
+                       bool narrowWaves) {
+    return fmt::format("slang {} {}{}{}{}{} {} {} {}", spGetBuildTagString(), BackendName(backend),
+                       traversal == Traversal::Hardware ? " with hardware traversal" : "",
+                       sampling == Sampling::Hardware ? " with hardware textures" : "",
+                       debugInfo ? " with debug info" : "", narrowWaves ? " with narrow waves" : "",
+                       Environment("CHRONO_BATCH_RENDER_EXP_OPT"),
+                       Environment("CHRONO_BATCH_RENDER_EXP_MINOPT"),
+                       Environment("CHRONO_BATCH_RENDER_EXP_SKIPVAL"));
+}
+
 ComPtr<slang::ISession> CreateSession(slang::IGlobalSession& global, Backend backend,
                                       Traversal traversal, Sampling sampling, bool debugInfo,
                                       ModuleFiles& files, std::string_view label,
@@ -249,6 +340,7 @@ ComPtr<slang::ISession> CreateSession(slang::IGlobalSession& global, Backend bac
     case Backend::Cpu:
         throw UnsupportedError("{} has no Slang target yet", BackendName(backend));
     }
+    options.push_back(Enable(slang::CompilerOptionName::UseUpToDateBinaryModule));
     if (const std::string level = Environment("CHRONO_BATCH_RENDER_EXP_OPT"); !level.empty()) {
         slang::CompilerOptionEntry entry = Enable(slang::CompilerOptionName::Optimization);
         entry.value.intValue0 = std::stoi(level);
@@ -671,9 +763,10 @@ std::optional<ReflectedSensorPipelineNode> ReflectSensorPipelineNode(slang::IGlo
 
 ReflectedNodes ReflectNodes(Backend backend, const KernelLibrary* library,
                             const SourceFiles& sources, std::string_view module,
-                            std::string_view label) {
+                            std::string_view label, const DiskCache* modules) {
     slang::IGlobalSession& global = GlobalSession();
-    ModuleFiles files(library, sources);
+    ModuleFiles files(library, sources, modules,
+                      SessionKey(backend, Traversal::Software, Sampling::Software, false, false));
     ComPtr<slang::ISession> session = CreateSession(global, backend, Traversal::Software,
                                                     Sampling::Software, false, files, label, false);
     ComPtr<slang::IBlob> diagnostics;
@@ -686,6 +779,7 @@ ReflectedNodes ReflectNodes(Backend backend, const KernelLibrary* library,
     if (layout == nullptr) {
         Fail(fmt::format("Reflecting {}", label), label, diagnostics);
     }
+    files.StoreBinaries(*session);
     ReflectedNodes nodes;
     for (slang::DeclReflection* decl : loaded->getModuleReflection()->getChildren()) {
         if (decl->getKind() == slang::DeclReflection::Kind::Struct) {
@@ -704,18 +798,17 @@ ReflectedNodes ReflectNodes(Backend backend, const KernelLibrary* library,
     return nodes;
 }
 
-std::vector<ReflectedSensorPipelineNode> ReflectSensorPipelineNodes(Backend backend,
-                                                                    const KernelLibrary* library,
-                                                                    const SourceFiles& sources,
-                                                                    std::string_view module,
-                                                                    std::string_view label) {
-    return ReflectNodes(backend, library, sources, module, label).pipeline;
+std::vector<ReflectedSensorPipelineNode>
+ReflectSensorPipelineNodes(Backend backend, const KernelLibrary* library,
+                           const SourceFiles& sources, std::string_view module,
+                           std::string_view label, const DiskCache* modules) {
+    return ReflectNodes(backend, library, sources, module, label, modules).pipeline;
 }
 
 std::vector<ReflectedNode> ReflectMaterialNodes(Backend backend, const KernelLibrary* library,
                                                 const SourceFiles& sources, std::string_view module,
-                                                std::string_view label) {
-    return ReflectNodes(backend, library, sources, module, label).material;
+                                                std::string_view label, const DiskCache* modules) {
+    return ReflectNodes(backend, library, sources, module, label, modules).material;
 }
 
 namespace {
@@ -723,9 +816,10 @@ namespace {
 KernelCode CompileWithSlang(Backend backend, Traversal traversal, Sampling sampling, bool debugInfo,
                             const KernelLibrary* library, const SourceFiles& sources,
                             std::span<const std::string> modules, std::string_view entry,
-                            std::string_view label, bool narrowWaves) {
+                            std::string_view label, bool narrowWaves, const DiskCache& binaries) {
     slang::IGlobalSession& global = GlobalSession();
-    ModuleFiles files(library, sources);
+    ModuleFiles files(library, sources, &binaries,
+                      SessionKey(backend, traversal, sampling, debugInfo, narrowWaves));
     ComPtr<slang::ISession> session =
         CreateSession(global, backend, traversal, sampling, debugInfo, files, label, narrowWaves);
 
@@ -744,6 +838,8 @@ KernelCode CompileWithSlang(Backend backend, Traversal traversal, Sampling sampl
         AdaptCudaSource(backend, entry, label, kernel.code);
     }
     Reflect(*reflected, *linked.linked->getLayout(0, diagnostics.writeRef()), entry, label, kernel);
+    files.RecordDependencies(*session);
+    files.StoreBinaries(*session);
     kernel.files = files.Read();
     return kernel;
 }
@@ -871,7 +967,7 @@ KernelCode Compile(Backend backend, Traversal traversal, Sampling sampling, bool
         kernel->cached = true;
     } else {
         kernel = CompileWithSlang(backend, traversal, sampling, debugInfo, library, sources,
-                                  modules, entry, label, narrowWaves);
+                                  modules, entry, label, narrowWaves, cache);
         cache.Store(key, kernel->Encode());
     }
 

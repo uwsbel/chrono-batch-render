@@ -114,6 +114,29 @@ TEST(ProgramTest, CachesEachSourceVariantOfAnEntry) {
     EXPECT_TRUE(compile(variant(2)).cached);
 }
 
+TEST(ProgramTest, LibraryModulesCompileOnceAndMatchTheirSource) {
+    const test::TemporaryDirectory shared;
+    const test::TemporaryDirectory fresh;
+    const auto variant = [](uint32_t value) {
+        return SourceFiles{{"test_import.slang",
+                            fmt::format("import chrono_batch_render.device.kernels.device;\n"
+                                        "[shader(\"compute\")]\n[numthreads(1, 1, 1)]\n"
+                                        "void Fill(uniform uint* words) {{ words[0] = {}; }}\n",
+                                        value)}};
+    };
+    const std::vector<std::string> modules = {"test_import"};
+    const auto compile = [&](const SourceFiles& sources, const DiskCache& cache) {
+        return Compile(Backend::Vulkan, Traversal::Software, Sampling::Software, false, nullptr,
+                       sources, modules, "Fill", "import", cache);
+    };
+    compile(variant(1), DiskCache(shared.Path()));
+    const KernelCode reused = compile(variant(2), DiskCache(shared.Path()));
+    const KernelCode parsed = compile(variant(2), DiskCache(fresh.Path()));
+    EXPECT_FALSE(reused.cached);
+    EXPECT_EQ(reused.code, parsed.code);
+    EXPECT_EQ(reused.files, parsed.files);
+}
+
 TEST(ProgramTest, ReportsKernelsThatCannotBeBuilt) {
     ForEachDevice([](Device& device) {
         const Ref<Program> program = AddProgram(device);

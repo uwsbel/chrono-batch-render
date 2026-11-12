@@ -67,16 +67,17 @@ struct ReflectedNodes {
 
 CHRONO_BATCH_RENDER_API ReflectedNodes ReflectNodes(Backend backend, const KernelLibrary* library,
                                                     const SourceFiles& sources,
-                                                    std::string_view module,
-                                                    std::string_view label);
+                                                    std::string_view module, std::string_view label,
+                                                    const DiskCache* modules = nullptr);
 
 CHRONO_BATCH_RENDER_API std::vector<ReflectedSensorPipelineNode>
 ReflectSensorPipelineNodes(Backend backend, const KernelLibrary* library,
                            const SourceFiles& sources, std::string_view module,
-                           std::string_view label);
+                           std::string_view label, const DiskCache* modules = nullptr);
 
 CHRONO_BATCH_RENDER_API std::vector<ReflectedNode>
 ReflectMaterialNodes(Backend backend, const KernelLibrary* library, const SourceFiles& sources,
-                     std::string_view module, std::string_view label);
+                     std::string_view module, std::string_view label,
+                     const DiskCache* modules = nullptr);
 
 }

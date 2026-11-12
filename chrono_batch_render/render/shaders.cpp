@@ -15,6 +15,7 @@
 #include "chrono_batch_render/scene/scene_impl.h"
 #include "chrono_batch_render/sensor_pipeline/node.h"
 #include "chrono_batch_render/stage/schema/runtime.h"
+#include "chrono_batch_render/util/disk_cache.h"
 #include "chrono_batch_render/util/error.h"
 #include "chrono_batch_render/util/log.h"
 #include "chrono_batch_render/util/text.h"
@@ -144,8 +145,10 @@ std::vector<std::string> LoadShaders(Scene& scene, const std::filesystem::path& 
     sources[path] = source;
     device::ReflectedNodes reflection;
     try {
-        reflection = device::ReflectNodes(backend, &kRenderKernels,
-                                          {sources.begin(), sources.end()}, module, file.string());
+        const DiskCache binaries(scene.GetDevice().KernelCacheDirectory() / "slang");
+        reflection =
+            device::ReflectNodes(backend, &kRenderKernels, {sources.begin(), sources.end()}, module,
+                                 file.string(), &binaries);
     } catch (const Error& error) {
         throw mapped(error);
     }
@@ -275,9 +278,10 @@ std::vector<std::string> LoadShaders(Scene& scene, const std::filesystem::path& 
         }
         const auto checked = material::ClosurePrimitiveSources(candidates);
         try {
+            const DiskCache binaries(scene.GetDevice().KernelCacheDirectory() / "slang");
             device::ReflectMaterialNodes(backend, &kRenderKernels, {checked.begin(), checked.end()},
                                          "chrono_batch_render.render.kernels.material.registered",
-                                         file.string());
+                                         file.string(), &binaries);
         } catch (const Error& error) {
             throw mapped(error);
         }
