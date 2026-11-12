@@ -12,6 +12,7 @@ repository-code: "https://github.com/uwsbel/chrono-batch-render"
 url: "https://uwsbel.github.io/chrono-batch-render/"
 license: BSD-3-Clause
 version: 0.1.0
+date-released: "2026-11-12"
 keywords:
   - rendering
   - ray tracing
