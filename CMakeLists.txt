@@ -6,7 +6,7 @@ endif()
 set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0 CACHE STRING "")
 project(
     chrono_batch_render
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION
         "A physically-based, real-time, spectral renderer for planetary robotics and sensing"
     HOMEPAGE_URL "https://github.com/uwsbel/chrono-batch-render"
