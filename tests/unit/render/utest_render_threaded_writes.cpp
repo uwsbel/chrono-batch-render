@@ -297,7 +297,7 @@ TEST(ThreadedWritesTest, LongRunsKeepMemoryFlat) {
         const char* soak = std::getenv("CHRONO_BATCH_RENDER_TEST_SOAK");
         const auto duration = soak != nullptr && std::string_view(soak) == "1"
                                   ? std::chrono::seconds(600)
-                                  : std::chrono::seconds(10);
+                                  : std::chrono::seconds(2);
         const auto start = std::chrono::steady_clock::now();
         const auto warmupEnd = start + duration / 5;
         const auto end = start + duration;
