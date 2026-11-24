@@ -87,39 +87,51 @@ enum class QeColor : uint {
     Clear,
 }
 
-static const float2 kGenericQe[] = {
-    float2(560, 0.00f), float2(580, 0.05f), float2(590, 0.25f), float2(600, 0.45f),
-    float2(620, 0.50f), float2(640, 0.45f), float2(660, 0.30f), float2(680, 0.12f),
-    float2(700, 0.02f), float2(720, 0.00f),
+// Scalars, read back as vectors: Slang emits a table of vectors as a __device__ constant
+// FixedArray<float2, N>, and hipRTC from ROCm 7.0 on cannot compile one (the is_convertible
+// check of HIP's vector constructors calls host-only helpers there).
+static const float kGenericQe[] = {
+    560, 0.00f, 580, 0.05f, 590, 0.25f, 600, 0.45f,
+    620, 0.50f, 640, 0.45f, 660, 0.30f, 680, 0.12f,
+    700, 0.02f, 720, 0.00f,
 
-    float2(460, 0.02f), float2(480, 0.10f), float2(500, 0.35f), float2(520, 0.52f),
-    float2(540, 0.55f), float2(560, 0.48f), float2(580, 0.30f), float2(600, 0.12f),
-    float2(620, 0.04f), float2(650, 0.01f), float2(680, 0.00f),
+    460, 0.02f, 480, 0.10f, 500, 0.35f, 520, 0.52f,
+    540, 0.55f, 560, 0.48f, 580, 0.30f, 600, 0.12f,
+    620, 0.04f, 650, 0.01f, 680, 0.00f,
 
-    float2(380, 0.05f), float2(400, 0.25f), float2(430, 0.42f), float2(450, 0.46f),
-    float2(470, 0.42f), float2(490, 0.28f), float2(510, 0.12f), float2(530, 0.04f),
-    float2(560, 0.01f), float2(600, 0.00f),
+    380, 0.05f, 400, 0.25f, 430, 0.42f, 450, 0.46f,
+    470, 0.42f, 490, 0.28f, 510, 0.12f, 530, 0.04f,
+    560, 0.01f, 600, 0.00f,
 
-    float2(350, 0.05f), float2(400, 0.30f), float2(450, 0.50f), float2(500, 0.60f),
-    float2(550, 0.62f), float2(600, 0.60f), float2(650, 0.55f), float2(700, 0.48f),
-    float2(750, 0.40f), float2(800, 0.32f), float2(850, 0.24f), float2(900, 0.16f),
-    float2(950, 0.08f), float2(1000, 0.03f), float2(1100, 0.00f),
+    350, 0.05f, 400, 0.30f, 450, 0.50f, 500, 0.60f,
+    550, 0.62f, 600, 0.60f, 650, 0.55f, 700, 0.48f,
+    750, 0.40f, 800, 0.32f, 850, 0.24f, 900, 0.16f,
+    950, 0.08f, 1000, 0.03f, 1100, 0.00f,
 };
+
+float2 GenericQe(uint i) {
+    return float2(kGenericQe[2 * i], kGenericQe[2 * i + 1]);
+}
 
 static const uint kGenericQeStarts[] = { 0, 10, 21, 31, 46 };
 
 static const float kRgbBasisFirstNm = 402.5f;
 static const float kRgbBasisStepNm = 45;
-static const float3 kRgbBasis[] = {
-    float3(0.05f, 0.00f, 0.60f), float3(0.00f, 0.05f, 1.00f), float3(0.00f, 0.45f, 0.70f),
-    float3(0.05f, 1.00f, 0.15f), float3(0.45f, 0.85f, 0.00f), float3(1.00f, 0.35f, 0.00f),
-    float3(0.80f, 0.05f, 0.00f), float3(0.25f, 0.00f, 0.00f),
+// Scalars, as kGenericQe.
+static const float kRgbBasis[] = {
+    0.05f, 0.00f, 0.60f, 0.00f, 0.05f, 1.00f, 0.00f, 0.45f, 0.70f,
+    0.05f, 1.00f, 0.15f, 0.45f, 0.85f, 0.00f, 1.00f, 0.35f, 0.00f,
+    0.80f, 0.05f, 0.00f, 0.25f, 0.00f, 0.00f,
 };
+
+float3 RgbBasisPoint(uint i) {
+    return float3(kRgbBasis[3 * i], kRgbBasis[3 * i + 1], kRgbBasis[3 * i + 2]);
+}
 
 float3 RgbBasis(float nanometers) {
     const float at = clamp((nanometers - kRgbBasisFirstNm) / kRgbBasisStepNm, 0.0f, 7.0f);
     const uint below = min(uint(at), 6u);
-    return lerp(kRgbBasis[below], kRgbBasis[below + 1], at - float(below));
+    return lerp(RgbBasisPoint(below), RgbBasisPoint(below + 1), at - float(below));
 }
 
 BandSet WriteBandSet(float first, float width) {
@@ -174,7 +186,7 @@ float BandQe(ArrayRef authored, QeColor color, float low, float high) {
     } else {
         for (uint i = kGenericQeStarts[uint(color)] + 1; i < kGenericQeStarts[uint(color) + 1];
              ++i) {
-            area += SegmentArea(kGenericQe[i - 1], kGenericQe[i], low, high);
+            area += SegmentArea(GenericQe(i - 1), GenericQe(i), low, high);
         }
     }
     return area / (high - low);

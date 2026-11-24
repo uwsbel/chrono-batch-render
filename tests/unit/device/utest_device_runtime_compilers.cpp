@@ -100,7 +100,7 @@ std::vector<RuntimeProgram> RuntimePrograms() {
         {&kSceneKernels, "chrono_batch_render.scene.tables.kernels.materials", {"WriteMaterials"}},
         {&kSceneKernels,
          "chrono_batch_render.scene.tables.kernels.sensors",
-         {"WriteCameras", "WriteLidars", "WriteRadars"}},
+         {"WriteCameras", "WriteDistortions", "WriteDetectors", "WriteLidars", "WriteRadars"}},
         {&kSceneKernels, "chrono_batch_render.scene.tables.kernels.surfaces", {"WriteSurfaces"}},
         {&kSceneKernels,
          "chrono_batch_render.scene.tables.kernels.tangents",

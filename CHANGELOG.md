@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- HIP: the `sensors` program's `WriteDetectors` kernel compiles with hipRTC from ROCm 7.0 on, so the first
+  render through a `hip:N` adapter no longer fails there. The runtime-compiler test compiles
+  `WriteDetectors` and `WriteDistortions`.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added
